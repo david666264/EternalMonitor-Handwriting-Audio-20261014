@@ -2,12 +2,12 @@
 //!
 //! Automation contract, shared with `scripts/win/Inspect-Host.ps1` and
 //! `tests/gui_snapshots.rs`. Keep these names when changing copy:
-//! - navigation buttons "Stream", "Performance" and "Settings";
-//! - the "QR code" button, which opens a dialog labelled "QR code";
-//! - on Stream, the "Pairing", "USB connection" and "PC audio" rows, and a
-//!   "Connected iPad" card that lists "Decode rate" and "Repaired fragments"
-//!   (or "Waiting for an iPad" when nobody is connected);
-//! - on Settings, the "Encoder input" row.
+//! - navigation buttons "连接", "性能" and "设置";
+//! - the "二维码" button, which opens a dialog labelled "二维码";
+//! - on Stream, the "配对", "USB 连接" and "电脑声音" rows, and a
+//!   "已连接的 iPad" card that lists "解码帧率" and "已修复分片"
+//!   (or "等待 iPad 连接" when nobody is connected);
+//! - on Settings, the "编码输入格式" row.
 
 mod icons;
 mod page_performance;
@@ -183,8 +183,8 @@ impl StreamState {
     }
 }
 
-const CAPTURE_AUTO_LABEL: &str = "Main display (mirror)";
-const CAPTURE_VIRTUAL_LABEL: &str = "Extended display (iPad)";
+const CAPTURE_AUTO_LABEL: &str = "主显示器（镜像）";
+const CAPTURE_VIRTUAL_LABEL: &str = "扩展显示器（iPad）";
 // The settings sentinel for the managed virtual display lives in control.rs
 // (shared with the startup preload).
 use crate::control::CAPTURE_VIRTUAL_SENTINEL;
@@ -597,7 +597,7 @@ impl AnalyzerApp {
     fn new_pairing_code(&mut self) {
         let result = self.control.shared.pairing.lock().rotate_code();
         if let Err(error) = result {
-            self.settings_error = Some(format!("Could not create a pairing code: {error}"));
+            self.settings_error = Some(format!("无法生成配对码：{error}"));
         }
     }
 
@@ -605,7 +605,7 @@ impl AnalyzerApp {
         let result = self.control.shared.pairing.lock().regenerate_token();
         match result {
             Ok(()) => self.persist_settings(),
-            Err(error) => self.settings_error = Some(format!("Could not reset pairing: {error}")),
+            Err(error) => self.settings_error = Some(format!("无法重置配对：{error}")),
         }
     }
 
@@ -710,12 +710,12 @@ impl AnalyzerApp {
                 self.draw_brand(ui);
                 ui.add_space(26.0);
                 ui.spacing_mut().item_spacing.y = 4.0;
-                self.nav_item(ui, Page::Stream, Icon::Display, "Stream");
-                self.nav_item(ui, Page::Performance, Icon::Activity, "Performance");
-                self.nav_item(ui, Page::Settings, Icon::Sliders, "Settings");
+                self.nav_item(ui, Page::Stream, Icon::Display, "连接");
+                self.nav_item(ui, Page::Performance, Icon::Activity, "性能");
+                self.nav_item(ui, Page::Settings, Icon::Sliders, "设置");
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.label(faint(format!("Version {}", env!("CARGO_PKG_VERSION"))));
+                    ui.label(faint(format!("版本 {}", env!("CARGO_PKG_VERSION"))));
                     ui.add_space(6.0);
                     sidebar_status(ui, snap, client);
                 });
@@ -805,10 +805,10 @@ impl AnalyzerApp {
 fn sidebar_status(ui: &mut egui::Ui, snap: &StatsSnapshot, client: &ClientSnapshot) {
     let state = StreamState::of(snap, client);
     let (title, detail) = match state {
-        StreamState::Off => ("Stopped".to_string(), "Streaming is off".to_string()),
-        StreamState::Ready => ("Ready".to_string(), "Waiting for an iPad".to_string()),
+        StreamState::Off => ("已停止".to_string(), "传输已关闭".to_string()),
+        StreamState::Ready => ("已就绪".to_string(), "等待 iPad 连接".to_string()),
         StreamState::Streaming => (
-            "Streaming".to_string(),
+            "传输中".to_string(),
             format!(
                 "{} · {}",
                 client
@@ -948,16 +948,16 @@ impl AnalyzerApp {
                 ui.set_width(320.0);
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.vertical_centered(|ui| {
-                    ui.label(overline("QR code"));
+                    ui.label(overline("二维码"));
                     ui.label(
-                        egui::RichText::new("Scan to connect")
+                        egui::RichText::new("扫码连接")
                             .family(semibold())
                             .size(20.0)
                             .color(TEXT),
                     );
                     ui.add(
                         egui::Label::new(muted(
-                            "On your iPad, open EternalMonitor, tap Scan QR and point it at this code.",
+                            "在 iPad 上打开 EternalMonitor，点“Scan QR”并扫描此二维码。",
                         ))
                         .wrap(),
                     );
@@ -990,7 +990,7 @@ impl AnalyzerApp {
                             painter.text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                "The QR code could not be created",
+                                "无法生成二维码",
                                 egui::FontId::new(SMALL, egui::FontFamily::Proportional),
                                 DANGER,
                             );
@@ -1000,13 +1000,13 @@ impl AnalyzerApp {
                     ui.label(mono(listen_addr.clone(), 14.0));
                     ui.add(
                         egui::Label::new(faint(
-                            "The code carries this PC's pairing key. Only show it to iPads you trust.",
+                            "二维码包含这台电脑的配对密钥，仅向你信任的 iPad 展示。",
                         ))
                         .wrap(),
                     );
                     ui.add_space(14.0);
                     let width = ui.available_width();
-                    if widgets::button_ex(ui, Tone::Primary, None, "Done", true, width).clicked() {
+                    if widgets::button_ex(ui, Tone::Primary, None, "完成", true, width).clicked() {
                         close = true;
                     }
                 });
@@ -1044,7 +1044,7 @@ fn format_uptime(uptime_secs: f64) -> String {
 /// `h264_nvenc` → `H.264 · NVENC`, `libx264` → `H.264 · CPU`.
 fn friendly_codec(name: &str) -> String {
     if name.is_empty() {
-        return "Detecting encoder".into();
+        return "正在检测编码器".into();
     }
     let lower = name.to_ascii_lowercase();
     let codec = if lower.contains("hevc") || lower.contains("265") {
@@ -1070,7 +1070,7 @@ fn friendly_codec(name: &str) -> String {
 
 fn value_or_unknown(value: &str) -> &str {
     if value.is_empty() {
-        "Unknown"
+        "未知"
     } else {
         value
     }

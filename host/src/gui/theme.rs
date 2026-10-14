@@ -153,6 +153,26 @@ fn fonts() -> FontDefinitions {
             .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
 
+    // Use the user's installed Windows font; do not redistribute system fonts.
+    // Geist and egui's bundled faces do not contain Simplified Chinese glyphs.
+    if cfg!(windows) {
+        if let Some(bytes) = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .and_then(|dir| std::fs::read(dir.join("Fonts").join("msyh.ttc")).ok())
+        {
+            fonts
+                .font_data
+                .insert("chinese-fallback".into(), Arc::new(FontData::from_owned(bytes)));
+            for family in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .push("chinese-fallback".into());
+            }
+        }
+    }
+
     // Keep egui's bundled faces behind Geist so device names in other
     // scripts, symbols and emoji still render.
     let fallback_sans = fonts

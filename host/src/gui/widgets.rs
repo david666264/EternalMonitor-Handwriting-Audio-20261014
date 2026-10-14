@@ -807,7 +807,7 @@ pub fn area_chart(
         painter.text(
             plot.center(),
             egui::Align2::CENTER_CENTER,
-            "Waiting for frames",
+            "等待画面",
             FontId::new(SMALL, FontFamily::Proportional),
             TEXT_FAINT,
         );

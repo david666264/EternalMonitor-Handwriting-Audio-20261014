@@ -1,10 +1,10 @@
-param(
+﻿param(
     [ValidateSet('Stream','Settings','QR')][string]$View = 'Stream',
     [Parameter(Mandatory=$true)][string]$Path,
     [switch]$Connected,
     [switch]$TestAutostart
 )
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = '停止'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type @'
 using System;
@@ -52,28 +52,28 @@ function Invoke-HostControl([string]$Name) {
     elseif ($control.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) { $pattern.Select() }
     else { throw "Host control cannot be invoked through UI Automation: $Name" }
 }
-Invoke-HostControl $(if ($View -eq 'Settings') { 'Settings' } else { 'Stream' })
-if ($View -eq 'QR') { Invoke-HostControl 'QR code' }
+Invoke-HostControl $(if ($View -eq 'Settings') { '设置' } else { '连接' })
+if ($View -eq 'QR') { Invoke-HostControl '二维码' }
 Start-Sleep -Milliseconds 300
 $nodes = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
 $names = @($nodes | ForEach-Object { $_.Current.Name } | Where-Object { $_ })
 if ($View -eq 'Stream') {
-    foreach ($label in @('Pairing','USB connection','PC audio')) {
+    foreach ($label in @('配对','USB 连接','电脑声音')) {
         if (!($names -contains $label)) { throw "Host Stream card absent: $label" }
     }
     if ($Connected) {
-        foreach ($label in @('Connected iPad','Decode rate','Repaired fragments')) {
+        foreach ($label in @('已连接的 iPad','解码帧率','已恢复分片')) {
             if (!($names -contains $label)) { throw "Connected client evidence absent: $label" }
         }
-        if ($names -contains 'Waiting for an iPad') { throw 'Host GUI has no connected client' }
+        if ($names -contains '等待 iPad 连接') { throw 'Host GUI has no connected client' }
     }
 }
-if ($View -eq 'Settings' -and !($names -contains 'Encoder input')) { throw 'Settings content did not appear' }
-if ($View -eq 'QR' -and !($names -contains 'Scan to connect')) { throw 'QR modal did not appear' }
+if ($View -eq 'Settings' -and !($names -contains '编码输入格式')) { throw 'Settings content did not appear' }
+if ($View -eq 'QR' -and !($names -contains '扫码连接')) { throw 'QR modal did not appear' }
 $autostart = $null
 if ($TestAutostart) {
     if ($View -ne 'Settings') { throw 'Autostart must be tested from Settings' }
-    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'Start on Windows startup')
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,'随 Windows 启动')
     $checkbox = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
     $toggle = $null
     if (!$checkbox -or !$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)) {

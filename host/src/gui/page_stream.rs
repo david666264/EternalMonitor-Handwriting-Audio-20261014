@@ -64,8 +64,8 @@ impl AnalyzerApp {
                 ui,
                 WARNING,
                 Icon::Warning,
-                "Hardware encoder unavailable. Encoding on the CPU (libx264).",
-                "Expect higher latency and heavy CPU load. Update your NVIDIA, AMD or Intel graphics driver, then restart the stream.",
+                "硬件编码器不可用，正在使用 CPU 编码（libx264）。",
+                "延迟和 CPU 占用可能升高。请更新 NVIDIA、AMD 或 Intel 显卡驱动，再重启连接。",
                 0.0,
                 |_| {},
             );
@@ -76,20 +76,20 @@ impl AnalyzerApp {
         let vdd_status = *self.control.shared.vdd_status.lock();
         if matches!(vdd_status, VddStatus::Failed | VddStatus::TaskFailed) {
             let body = if vdd_status == VddStatus::TaskFailed {
-                "The display task could not run. Reinstall EternalMonitor-Setup.exe to repair its permissions, then restart the stream. Copy the logs to see the Windows error."
+                "显示器任务无法运行。请重新安装 EternalMonitor-Setup.exe 修复权限，再重启连接。复制日志可查看 Windows 错误。"
             } else {
-                "The display task ran, but no display appeared in time. Check Windows display settings and the driver, then restart the stream."
+                "显示器任务已运行，但显示器未及时出现。请检查 Windows 显示设置和驱动，再重启连接。"
             };
             let mut copy_logs = false;
             widgets::banner(
                 ui,
                 WARNING,
                 Icon::Warning,
-                "Extended display unavailable. Mirroring the main screen instead.",
+                "扩展显示器不可用，已改为镜像主屏。",
                 body,
                 110.0,
                 |ui| {
-                    copy_logs = widgets::button(ui, Tone::Secondary, Some(Icon::Logs), "Copy logs")
+                    copy_logs = widgets::button(ui, Tone::Secondary, Some(Icon::Logs), "复制日志")
                         .clicked();
                 },
             );
@@ -109,14 +109,14 @@ impl AnalyzerApp {
                     ui,
                     ACCENT,
                     Icon::Download,
-                    &format!("EternalMonitor v{version} is available"),
-                    "Update the PC and the iPad app together. Both need the same version.",
+                    &format!("EternalMonitor v{version} 已发布"),
+                    "请同时更新电脑端和 iPad 端，两端需要使用相同版本。",
                     210.0,
                     |ui| {
-                        dismiss = widgets::button(ui, Tone::Ghost, None, "Dismiss").clicked();
+                        dismiss = widgets::button(ui, Tone::Ghost, None, "忽略").clicked();
                         widgets::link(
                             ui,
-                            "View release",
+                            "查看版本",
                             &format!(
                                 "https://github.com/whoisaldo/EternalMonitor/releases/tag/v{version}"
                             ),
@@ -140,11 +140,11 @@ impl AnalyzerApp {
             ui,
             ACCENT,
             Icon::Refresh,
-            "Restart the stream to apply your changes",
-            "Display and encoder changes take effect when the stream restarts. The iPad reconnects on its own.",
+            "重启连接以应用更改",
+            "显示器和编码器更改会在重启连接后生效，iPad 会自动重新连接。",
             140.0,
             |ui| {
-                restart = widgets::button(ui, Tone::Primary, None, "Restart now").clicked();
+                restart = widgets::button(ui, Tone::Primary, None, "立即重启").clicked();
             },
         );
         if restart {
@@ -162,12 +162,12 @@ impl AnalyzerApp {
             .unwrap_or_default();
         let (title, subtitle) = match state {
             StreamState::Off => (
-                "Streaming is off".to_string(),
-                "Start streaming so your iPad can connect.".to_string(),
+                "连接已停止".to_string(),
+                "开始连接后，iPad 即可接入。".to_string(),
             ),
             StreamState::Ready => (
-                "Ready for your iPad".to_string(),
-                "Open EternalMonitor on your iPad and choose this PC.".to_string(),
+                "等待 iPad 连接".to_string(),
+                "在 iPad 上打开 EternalMonitor 并选择这台电脑。".to_string(),
             ),
             StreamState::Streaming => {
                 let (w, h) = snap.capture_resolution;
@@ -177,7 +177,7 @@ impl AnalyzerApp {
                 }
                 parts.push(format!("{} fps", self.control.shared.effective_fps()));
                 parts.push(friendly_codec(&snap.codec_name));
-                (format!("Streaming to {device}"), parts.join("  ·  "))
+                (format!("正在连接 {device}"), parts.join("  ·  "))
             }
         };
 
@@ -230,13 +230,13 @@ impl AnalyzerApp {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if snap.pipeline_running {
-                            if widgets::button(ui, Tone::Danger, Some(Icon::Stop), "Stop").clicked()
+                            if widgets::button(ui, Tone::Danger, Some(Icon::Stop), "停止").clicked()
                             {
                                 action = Some(HeaderAction::Stop);
                             }
-                            if widgets::button(ui, Tone::Secondary, Some(Icon::Refresh), "Restart")
+                            if widgets::button(ui, Tone::Secondary, Some(Icon::Refresh), "重启")
                                 .on_hover_text(
-                                    "Restart capture and encoding. The iPad reconnects on its own.",
+                                    "重新启动采集和编码，iPad 会自动重新连接。",
                                 )
                                 .clicked()
                             {
@@ -246,7 +246,7 @@ impl AnalyzerApp {
                             ui,
                             Tone::Primary,
                             Some(Icon::Play),
-                            "Start streaming",
+                            "开始连接",
                         )
                         .clicked()
                         {
@@ -269,30 +269,30 @@ impl AnalyzerApp {
                 ui.columns(4, |cols| {
                     widgets::metric(
                         &mut cols[0],
-                        "Frame rate",
+                        "帧率",
                         &format!("{:.0}", snap.capture_fps),
                         "fps",
                         22.0,
                     )
-                    .on_hover_text("Frames captured per second on this PC.");
-                    widgets::metric(&mut cols[1], "Latency", &latency, "ms", 22.0)
-                        .on_hover_text("Time from capture on this PC to the picture on the iPad.");
+                    .on_hover_text("这台电脑每秒采集的画面帧数。");
+                    widgets::metric(&mut cols[1], "延迟", &latency, "ms", 22.0)
+                        .on_hover_text("从电脑采集画面到 iPad 显示画面的时间。");
                     widgets::metric(
                         &mut cols[2],
-                        "Bitrate",
+                        "码率",
                         &format!("{:.1}", snap.bandwidth_mbps),
                         "Mbps",
                         22.0,
                     )
-                    .on_hover_text("Video sent to the iPad each second. It adapts to the network.");
+                    .on_hover_text("每秒发送到 iPad 的视频数据量，会随网络状况调整。");
                     widgets::metric(
                         &mut cols[3],
-                        "Encode time",
+                        "编码耗时",
                         &format!("{:.1}", snap.encode_time_us as f64 / 1000.0),
                         "ms",
                         22.0,
                     )
-                    .on_hover_text("Time the encoder takes to compress each frame.");
+                    .on_hover_text("编码器压缩每帧画面所需的时间。");
                 });
             }
 
@@ -309,14 +309,14 @@ impl AnalyzerApp {
         // detect_local_ip() reports "unknown:<port>" when no LAN adapter is up.
         let online = !snap.listen_addr.is_empty() && !snap.listen_addr.starts_with("unknown");
         let mut open_qr = false;
-        widgets::card_header(ui, "Connect an iPad", |ui| {
+        widgets::card_header(ui, "连接 iPad", |ui| {
             open_qr =
-                widgets::button_ex(ui, Tone::Secondary, Some(Icon::Qr), "QR code", online, 0.0)
+                widgets::button_ex(ui, Tone::Secondary, Some(Icon::Qr), "二维码", online, 0.0)
                     .clicked();
         });
         widgets::paragraph(
             ui,
-            muted("On your iPad, open EternalMonitor and choose this PC, or tap Scan QR. USB connections pair automatically."),
+            muted("在 iPad 上打开 EternalMonitor 并选择这台电脑，或点击扫码。USB 连接会自动配对。"),
         );
         ui.add_space(8.0);
 
@@ -329,20 +329,20 @@ impl AnalyzerApp {
         let mut rotate = false;
         let copied = self.recently_copied(Copied::Address);
         if online {
-            value_block(ui, "Address", &snap.listen_addr, |ui| {
+            value_block(ui, "地址", &snap.listen_addr, |ui| {
                 let (icon, tip) = if copied {
-                    (Icon::Check, "Copied")
+                    (Icon::Check, "已复制")
                 } else {
-                    (Icon::Copy, "Copy address")
+                    (Icon::Copy, "复制地址")
                 };
                 copy = widgets::icon_button(ui, icon, tip).clicked();
             });
         } else {
-            ui.label(overline("Address"));
+            ui.label(overline("地址"));
             widgets::paragraph(
                 ui,
                 RichText::new(
-                    "No network found. Connect this PC to Wi-Fi or Ethernet, or use a USB cable.",
+                    "未找到网络。请让电脑连接 Wi-Fi 或以太网，或使用 USB 数据线。",
                 )
                 .size(SMALL)
                 .color(WARNING),
@@ -350,12 +350,12 @@ impl AnalyzerApp {
         }
         ui.add_space(4.0);
         if pairing_required {
-            value_block(ui, "Pairing code", &code, |ui| {
-                rotate = widgets::icon_button(ui, Icon::Refresh, "New code").clicked();
+            value_block(ui, "配对码", &code, |ui| {
+                rotate = widgets::icon_button(ui, Icon::Refresh, "生成新码").clicked();
             });
         } else {
-            ui.label(overline("Pairing code"));
-            ui.label(muted("Not needed while pairing is off."));
+            ui.label(overline("配对码"));
+            ui.label(muted("关闭配对时无需配对码。"));
         }
         if copy && online {
             self.copy(ui.ctx(), Copied::Address, snap.listen_addr.clone());
@@ -382,15 +382,15 @@ impl AnalyzerApp {
                 ui,
                 Icon::Lock,
                 if required { ACCENT } else { TEXT_MUTED },
-                "Pairing",
+                "配对",
                 if required {
-                    "New iPads on Wi-Fi enter the pairing code once. USB needs no code."
+                    "新 iPad 通过 Wi-Fi 连接时只需输入一次配对码，USB 连接无需配对码。"
                 } else {
-                    "Off. Any iPad on your network can connect without a code."
+                    "已关闭，同一网络内的任何 iPad 均可免码连接。"
                 },
                 64.0,
                 |ui| {
-                    widgets::toggle(ui, &mut require, "Require pairing");
+                    widgets::toggle(ui, &mut require, "要求配对");
                 },
             );
             if require != required {
@@ -412,7 +412,7 @@ impl AnalyzerApp {
                 ui,
                 Icon::Plug,
                 usb_color,
-                "USB connection",
+                "USB 连接",
                 &usb_text,
                 if snap.usb_service_reachable {
                     110.0
@@ -441,11 +441,11 @@ impl AnalyzerApp {
                 ui,
                 Icon::Speaker,
                 audio_color,
-                "PC audio",
+                "电脑声音",
                 &audio_text,
                 64.0,
                 |ui| {
-                    widgets::toggle(ui, &mut audio_on, "Stream PC audio");
+                    widgets::toggle(ui, &mut audio_on, "传输电脑声音");
                 },
             );
             if audio_on != enabled {
@@ -455,26 +455,26 @@ impl AnalyzerApp {
 
             // Display
             let description = match self.settings_capture_display.as_str() {
-                "" => "Mirrors your main screen on the iPad.".to_string(),
+                "" => "将主屏画面镜像到 iPad。".to_string(),
                 s if s == CAPTURE_VIRTUAL_SENTINEL => match *self.control.shared.vdd_status.lock() {
                     VddStatus::Active => {
-                        "Extended display is on. Drag windows past the edge of your main screen."
+                        "扩展显示器已开启，将窗口拖过主屏边缘即可移入。"
                             .to_string()
                     }
                     VddStatus::Failed | VddStatus::TaskFailed => {
-                        "The extended display didn't start, so the main screen is mirrored."
+                        "扩展显示器未能启动，已改为镜像主屏。"
                             .to_string()
                     }
-                    _ => "Adds a second screen for the iPad. It appears when an iPad connects."
+                    _ => "为 iPad 添加第二块显示器，在 iPad 连接后出现。"
                         .to_string(),
                 },
-                name => format!("Mirrors {}.", name.rsplit('\\').next().unwrap_or(name)),
+                name => format!("镜像 {}。", name.rsplit('\\').next().unwrap_or(name)),
             };
             widgets::icon_row(
                 ui,
                 Icon::Display,
                 TEXT_MUTED,
-                "Display",
+                "显示器",
                 &description,
                 250.0,
                 |ui| {
@@ -496,7 +496,7 @@ impl AnalyzerApp {
             super::format_output_label(o)
         } else {
             format!(
-                "{} (not connected)",
+                "{}（未连接）",
                 current.rsplit('\\').next().unwrap_or(&current)
             )
         };
@@ -559,7 +559,7 @@ fn value_block(ui: &mut Ui, label: &str, value: &str, controls: impl FnOnce(&mut
 
 fn client_card(ui: &mut Ui, client: &ClientSnapshot, streaming: bool) {
     let link = client.link_name();
-    widgets::card_header(ui, "Connected iPad", |ui| {
+    widgets::card_header(ui, "已连接的 iPad", |ui| {
         if client.info.is_some() {
             widgets::badge(ui, link, ACCENT);
         }
@@ -569,15 +569,15 @@ fn client_card(ui: &mut Ui, client: &ClientSnapshot, streaming: bool) {
             widgets::empty_state(
                 ui,
                 Icon::Tablet,
-                "Waiting for an iPad",
-                "It appears here as soon as it connects.",
+                "等待 iPad 连接",
+                "连接后会立即显示在这里。",
             );
         } else {
             widgets::empty_state(
                 ui,
                 Icon::Tablet,
-                "No iPad connected",
-                "Start streaming, then connect from your iPad.",
+                "尚未连接 iPad",
+                "先开始连接，再从 iPad 接入。",
             );
         }
         return;
@@ -601,7 +601,7 @@ fn client_card(ui: &mut Ui, client: &ClientSnapshot, streaming: bool) {
     });
     ui.add_space(6.0);
     let Some(r) = client.report.as_ref() else {
-        ui.label(muted("Waiting for the first measurements from the iPad."));
+        ui.label(muted("等待 iPad 发送首次测量数据。"));
         return;
     };
     let total = f64::from(r.frags_received) + f64::from(r.frags_repaired) + f64::from(r.frags_lost);
@@ -613,26 +613,26 @@ fn client_card(ui: &mut Ui, client: &ClientSnapshot, streaming: bool) {
         }
     };
     let latency = if r.e2e_latency_ms_x10 == 0 {
-        "Measuring".to_string()
+        "测量中".to_string()
     } else {
         format!("{:.1} ms", f64::from(r.e2e_latency_ms_x10) / 10.0)
     };
     let rows = [
         (
-            "Round-trip time",
+            "往返耗时",
             format!("{:.1} ms", f64::from(r.rtt_ms_x10) / 10.0),
         ),
-        ("End-to-end latency", latency),
+        ("端到端延迟", latency),
         (
-            "Decode rate",
+            "解码帧率",
             format!("{:.1} fps", f64::from(r.decode_fps_x10) / 10.0),
         ),
-        ("Unrecovered loss", format!("{:.2}%", percent(r.frags_lost))),
+        ("未恢复丢包", format!("{:.2}%", percent(r.frags_lost))),
         (
-            "Repaired fragments",
+            "已恢复分片",
             format!("{:.2}%", percent(r.frags_repaired)),
         ),
-        ("Audio buffer", format!("{} ms", r.audio_buffer_ms)),
+        ("音频缓冲", format!("{} ms", r.audio_buffer_ms)),
     ];
     ui.columns(2, |cols| {
         for (i, (label, value)) in rows.iter().enumerate() {
@@ -654,13 +654,13 @@ pub(super) struct UsbSummary {
 /// Opens Apple Devices when it is installed, otherwise links to its Store page.
 fn apple_devices_action(ui: &mut Ui, installed: bool) {
     if installed {
-        if widgets::button(ui, Tone::Primary, None, "Open Apple Devices").clicked() {
+        if widgets::button(ui, Tone::Primary, None, "打开 Apple Devices").clicked() {
             crate::transport::apple_usb::open_apple_devices();
         }
     } else {
         widgets::link(
             ui,
-            "Get Apple Devices",
+            "获取 Apple Devices",
             crate::transport::apple_usb::APPLE_DEVICES_STORE_URL,
         );
     }
@@ -678,13 +678,13 @@ pub(super) fn usb_cable_notice(
     }
     Some(if installed {
         (
-            "Your iPad is plugged in, but Apple Devices is not running",
-            "EternalMonitor reaches an iPad over the USB cable through Apple Devices. Open it and leave it running; it can stay minimized. WiFi works without it.",
+            "iPad 已插线，但 Apple Devices 尚未运行",
+            "EternalMonitor 通过 Apple Devices 使用 USB 连接 iPad。请打开并保持它运行，可以最小化。Wi-Fi 连接无需运行它。",
         )
     } else {
         (
-            "Your iPad is plugged in, but Apple Devices is not installed",
-            "EternalMonitor needs Apple's free Apple Devices app to stream over the USB cable. Install it from the Microsoft Store, open it, and leave it running. WiFi works without it.",
+            "iPad 已插线，但尚未安装 Apple Devices",
+            "EternalMonitor 使用 USB 连接需要免费的 Apple Devices 应用。请从 Microsoft Store 安装，打开并保持运行。Wi-Fi 连接无需它。",
         )
     })
 }
@@ -700,41 +700,41 @@ pub(super) fn usb_summary(
 ) -> UsbSummary {
     if !reachable {
         let text = match (cabled > 0, installed) {
-            (true, true) => "iPad plugged in. Open Apple Devices and keep it running to stream over the cable.",
-            (true, false) => "iPad plugged in, but Apple Devices is not installed. Get it from the Microsoft Store to use USB.",
-            (false, true) => "Open Apple Devices to use USB. It must stay running while you stream.",
-            (false, false) => "Install the Apple Devices app from the Microsoft Store to use USB.",
+            (true, true) => "iPad 已插线。请打开 Apple Devices 并保持运行，以使用有线连接。",
+            (true, false) => "iPad 已插线，但尚未安装 Apple Devices。请从 Microsoft Store 获取它以使用 USB。",
+            (false, true) => "请打开 Apple Devices 以使用 USB，并在连接期间保持它运行。",
+            (false, false) => "请从 Microsoft Store 安装 Apple Devices 应用以使用 USB。",
         };
         return UsbSummary {
             text: text.into(),
-            badge: "Unavailable",
+            badge: "不可用",
             available: false,
         };
     }
     let (text, badge) = match link_state {
         "Connected" => (
-            "An iPad is streaming over the cable.".to_string(),
-            "Connected",
+            "iPad 正在通过数据线连接。".to_string(),
+            "已连接",
         ),
         "Waiting for the iPad app" => (
-            "iPad plugged in. Open EternalMonitor on it to connect.".to_string(),
-            "Ready",
+            "iPad 已插线，请在 iPad 上打开 EternalMonitor 进行连接。".to_string(),
+            "就绪",
         ),
         "Waiting for an iPad" => (
-            "Plug in your iPad to connect over USB.".to_string(),
-            "Ready",
+            "请插入 iPad 数据线以通过 USB 连接。".to_string(),
+            "就绪",
         ),
         "Checking Apple device service" => (
-            "Checking for Apple's device service…".to_string(),
-            "Checking",
+            "正在检查 Apple 设备服务…".to_string(),
+            "检查中",
         ),
         other => {
             let plugged = match devices {
-                0 => "no iPad plugged in".to_string(),
-                1 => "1 device plugged in".to_string(),
-                n => format!("{n} devices plugged in"),
+                0 => "未插入 iPad".to_string(),
+                1 => "已插入 1 台设备".to_string(),
+                n => format!("已插入 {n} 台设备"),
             };
-            (format!("{other} · {plugged}"), "Ready")
+            (format!("{other} · {plugged}"), "就绪")
         }
     };
     UsbSummary {
@@ -752,25 +752,25 @@ pub(super) fn audio_summary(
 ) -> (String, egui::Color32) {
     if let Some(error) = &audio.error {
         return (
-            format!("Audio unavailable: {error}. Video continues. Turn Stream PC audio off and on to retry."),
+            format!("音频不可用：{error}。画面传输仍继续。请关闭再开启“传输电脑声音”以重试。"),
             WARNING,
         );
     }
     if !enabled {
         return (
-            "Off. The iPad plays no sound from this PC.".into(),
+            "已关闭，iPad 不会播放这台电脑的声音。".into(),
             TEXT_MUTED,
         );
     }
     if audio.status == "Streaming" {
         let device = if audio.device.is_empty() {
-            "PC audio"
+            "电脑声音"
         } else {
             audio.device.as_str()
         };
         return (
             format!(
-                "Streaming {device} · Opus {:.0} kbps · {:.0} packets/s",
+                "正在传输 {device} · Opus {:.0} kbps · {:.0} 包/秒",
                 audio.kbps, audio.packets_per_sec
             ),
             ACCENT,
@@ -778,11 +778,21 @@ pub(super) fn audio_summary(
     }
     // The audio stage's idle status names the protocol, not the device.
     if audio.status == "Waiting for client" {
-        return ("Starts when an iPad connects.".into(), TEXT_MUTED);
+        return ("iPad 连接后开始传输。".into(), TEXT_MUTED);
     }
     if audio.device.is_empty() {
-        (value_or_unknown(&audio.status).to_string(), TEXT_MUTED)
+        (display_audio_status(&audio.status).to_string(), TEXT_MUTED)
     } else {
-        (format!("{} · {}", audio.status, audio.device), TEXT_MUTED)
+        (format!("{} · {}", display_audio_status(&audio.status), audio.device), TEXT_MUTED)
+    }
+}
+
+// Translate presentation only; engine and transport state keys stay stable.
+fn display_audio_status(status: &str) -> &str {
+    match status {
+        "Stopped" => "已停止",
+        "Unavailable" => "不可用",
+        "Off" => "已关闭",
+        other => value_or_unknown(other),
     }
 }

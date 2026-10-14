@@ -199,7 +199,7 @@ fn stream_settings_pairing_and_recovery_are_visible_and_operable() {
     // through UI Automation on the reference PC.
     for label in [
         "Streaming to Test iPad Pro",
-        "Connected iPad",
+        "已连接的 iPad",
         "Test iPad Pro",
         "3.2 ms",
         "18.4 ms",
@@ -207,48 +207,48 @@ fn stream_settings_pairing_and_recovery_are_visible_and_operable() {
         "1.00%",
         "2.00%",
         "60 ms",
-        "Decode rate",
-        "Repaired fragments",
-        "Pairing",
-        "USB connection",
-        "PC audio",
-        "Require pairing",
-        "Stream PC audio",
+        "解码帧率",
+        "已恢复分片",
+        "配对",
+        "USB 连接",
+        "电脑声音",
+        "要求配对",
+        "传输电脑声音",
         "192.0.2.10:9876",
     ] {
         harness.get_by_label(label);
     }
-    assert!(harness.query_by_label("Waiting for an iPad").is_none());
+    assert!(harness.query_by_label("等待 iPad 连接").is_none());
     harness.get_by_label_contains("Streaming PC headphones");
     snapshot(&mut harness, &shared, "stream-connected");
 
     let old_code = shared.pairing.lock().code();
-    harness.get_by_label("New code").click();
+    harness.get_by_label("生成新码").click();
     harness.run_steps(4);
     assert_ne!(shared.pairing.lock().code(), old_code);
 
     harness
-        .get_by_role_and_label(Role::Button, "QR code")
+        .get_by_role_and_label(Role::Button, "二维码")
         .click();
     harness.run_steps(4);
     // Opening the dialog refreshes the LAN address. Restore the fixed
     // fixture after exercising that action, before the deterministic image.
     PIPELINE_STATS.lock().listen_addr = "192.0.2.10:9876".into();
     harness.run_steps(4);
-    harness.get_by_label("Scan to connect");
+    harness.get_by_label("扫码连接");
     harness.get_by_label("QR CODE");
     snapshot(&mut harness, &shared, "pairing-qr");
-    harness.get_by_label("Done").click();
+    harness.get_by_label("完成").click();
     harness.run_steps(4);
-    assert!(harness.query_by_label("Scan to connect").is_none());
+    assert!(harness.query_by_label("扫码连接").is_none());
 
-    nav(&mut harness, "Performance");
-    harness.get_by_label("Uptime");
-    harness.get_by_label("Encode time");
+    nav(&mut harness, "性能");
+    harness.get_by_label("运行时长");
+    harness.get_by_label("编码耗时");
     snapshot(&mut harness, &shared, "performance");
 
-    nav(&mut harness, "Settings");
-    harness.get_by_label("Encoder input");
+    nav(&mut harness, "设置");
+    harness.get_by_label("编码输入格式");
     harness.get_by_label("120").click();
     harness.run_steps(4);
     assert_eq!(shared.target_fps.load(Ordering::SeqCst), 120);
@@ -259,41 +259,41 @@ fn stream_settings_pairing_and_recovery_are_visible_and_operable() {
         eternal_host::encoder::input::EncoderInput::Bgra
     );
     // Encoder input applies on restart, so the page asks for one.
-    harness.get_by_label("Restart the stream to apply your changes");
+    harness.get_by_label("重启连接以应用更改");
     snapshot(&mut harness, &shared, "settings");
 
     // General sits below the fold of the Settings page.
     harness
-        .get_by_label("Check for updates daily")
+        .get_by_label("每天检查更新")
         .scroll_to_me();
     harness.run_steps(4);
-    harness.get_by_label("Check for updates daily").click();
+    harness.get_by_label("每天检查更新").click();
     harness.run_steps(4);
-    nav(&mut harness, "Stream");
+    nav(&mut harness, "连接");
     for _ in 0..30 {
         harness.run_steps(4);
-        if harness.query_by_label("Dismiss").is_some() {
+        if harness.query_by_label("忽略").is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     harness.get_by_label("EternalMonitor v99.0.0 is available");
     snapshot(&mut harness, &shared, "update-banner");
-    harness.get_by_label("Dismiss").click();
+    harness.get_by_label("忽略").click();
     harness.run_steps(4);
-    assert!(harness.query_by_label("Dismiss").is_none());
+    assert!(harness.query_by_label("忽略").is_none());
 
-    harness.get_by_label("Restart now").click();
+    harness.get_by_label("立即重启").click();
     harness.run_steps(4);
     assert!(harness
-        .query_by_label("Restart the stream to apply your changes")
+        .query_by_label("重启连接以应用更改")
         .is_none());
 
     PIPELINE_STATS.lock().using_software_fallback = true;
     *shared.vdd_status.lock() = VddStatus::TaskFailed;
     harness.run_steps(4);
-    harness.get_by_label("Hardware encoder unavailable. Encoding on the CPU (libx264).");
-    harness.get_by_label("Extended display unavailable. Mirroring the main screen instead.");
+    harness.get_by_label("硬件编码器不可用，正在使用 CPU 编码（libx264）。");
+    harness.get_by_label("扩展显示器不可用，已改为镜像主屏。");
     snapshot(&mut harness, &shared, "software-and-display-task-failure");
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -339,15 +339,15 @@ fn review_screens() {
     connect_ipad(&shared);
     let mut h = harness(&shared, egui::vec2(1040.0, 720.0), 2.0);
     save(&mut h, "streaming");
-    h.get_by_role_and_label(Role::Button, "QR code").click();
+    h.get_by_role_and_label(Role::Button, "二维码").click();
     h.run_steps(4);
     PIPELINE_STATS.lock().listen_addr = "192.0.2.10:9876".into();
     save(&mut h, "qr");
-    h.get_by_label("Done").click();
-    nav(&mut h, "Performance");
+    h.get_by_label("完成").click();
+    nav(&mut h, "性能");
     save(&mut h, "performance");
     let mut tall = harness(&shared, egui::vec2(1040.0, 1720.0), 2.0);
-    nav(&mut tall, "Settings");
+    nav(&mut tall, "设置");
     save(&mut tall, "settings-full");
     let mut small = harness(&shared, egui::vec2(820.0, 560.0), 1.5);
     save(&mut small, "minimum-size");

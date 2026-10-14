@@ -1,0 +1,44 @@
+name: Windows Chinese interface
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: windows-2022
+    timeout-minutes: 50
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: ffmpeg
+        with:
+          path: C:\ffmpeg
+          key: ffmpeg-7.1.1-full_build-shared
+      - name: Prepare FFmpeg SDK
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-full_build-shared.7z' -OutFile ffmpeg.7z
+          7z x ffmpeg.7z -oC:\ffmpeg-extract | Out-Null
+          Move-Item C:\ffmpeg-extract\ffmpeg-7.1.1-full_build-shared C:\ffmpeg
+      - name: Configure SDK
+        shell: pwsh
+        run: |
+          "FFMPEG_DIR=C:\ffmpeg" | Out-File $env:GITHUB_ENV -Append
+          "C:\ffmpeg\bin" | Out-File $env:GITHUB_PATH -Append
+      - uses: Swatinem/rust-cache@v2
+      - name: Check and test host
+        shell: pwsh
+        run: |
+          cargo test --locked -p eternal-host --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p eternal-wire
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Chinese Windows host
+        run: cargo build --release --locked -p eternal-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EternalMonitor-Windows-Chinese
+          path: target/release/eternal-host.exe

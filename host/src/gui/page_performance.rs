@@ -21,21 +21,21 @@ impl AnalyzerApp {
         let copied = self.recently_copied(Copied::Logs);
         page_header(
             ui,
-            "Performance",
-            "Live measurements from capture, encoding and the network on this PC.",
+            "性能",
+            "实时查看这台电脑的画面采集、编码和网络数据。",
             |ui| {
-                let label = if copied { "Copied" } else { "Copy logs" };
+                let label = if copied { "已复制" } else { "复制日志" };
                 let icon = if copied { Icon::Check } else { Icon::Logs };
                 let response =
                     widgets::button_ex(ui, Tone::Secondary, Some(icon), label, has_logs, 0.0);
                 copy_logs = response.clicked();
                 if has_logs {
                     response.on_hover_text(format!(
-                        "Copies the full session log from {}",
+                        "复制完整会话日志：{}",
                         crate::logging::session_log_path().display()
                     ));
                 } else {
-                    response.on_hover_text("No log lines have been captured yet.");
+                    response.on_hover_text("尚未记录日志。");
                 }
             },
         );
@@ -47,28 +47,28 @@ impl AnalyzerApp {
 
         let tiles: [(&str, String, &str, &VecDeque<f32>, f32); 4] = [
             (
-                "Capture",
+                "采集",
                 format!("{:.0}", snap.capture_fps),
                 "fps",
                 &self.history.capture_fps,
                 60.0,
             ),
             (
-                "Encode",
+                "编码",
                 format!("{:.0}", snap.encode_fps),
                 "fps",
                 &self.history.encode_fps,
                 60.0,
             ),
             (
-                "Send",
+                "发送",
                 format!("{:.0}", snap.transport_fps),
                 "fps",
                 &self.history.send_fps,
                 60.0,
             ),
             (
-                "Bandwidth",
+                "带宽",
                 format!("{:.1}", snap.bandwidth_mbps),
                 "Mbps",
                 &self.history.bandwidth_mbps,
@@ -101,12 +101,12 @@ impl AnalyzerApp {
             } else {
                 let avg = data.iter().sum::<f32>() / data.len() as f32;
                 let peak = data.iter().copied().fold(0.0_f32, f32::max);
-                format!("avg {avg:.1} ms  ·  peak {peak:.1} ms")
+                format!("平均 {avg:.1} ms  ·  峰值 {peak:.1} ms")
             };
-            widgets::card_header(ui, "Encode time", |ui| {
+            widgets::card_header(ui, "编码耗时", |ui| {
                 ui.label(RichText::new(summary).family(egui::FontFamily::Monospace).size(12.0).color(TEXT_MUTED));
             });
-            ui.label(muted("Milliseconds to encode each frame. Lower is better; under 8 ms keeps up with 120 fps."));
+            ui.label(muted("每帧编码耗时（毫秒），越低越好。低于 8 ms 可满足 120 fps。"));
             ui.add_space(8.0);
             widgets::area_chart(ui, &data, 170.0, ACCENT, 4.0, "ms");
         });
@@ -115,42 +115,42 @@ impl AnalyzerApp {
         let (w, h) = snap.capture_resolution;
         let encoder_rows = [
             ("GPU", value_or_unknown(&snap.gpu_name).to_string()),
-            ("Encoder", friendly_codec(&snap.codec_name)),
-            ("Codec name", value_or_unknown(&snap.codec_name).to_string()),
+            ("编码器", friendly_codec(&snap.codec_name)),
+            ("编码格式名称", value_or_unknown(&snap.codec_name).to_string()),
             (
-                "Resolution",
+                "分辨率",
                 if w > 0 {
                     format!("{w} × {h}")
                 } else {
-                    "Unknown".into()
+                    "未知".into()
                 },
             ),
             (
-                "Capture display",
+                "采集显示器",
                 value_or_unknown(&snap.capture_display).to_string(),
             ),
             (
-                "Target bitrate",
+                "目标码率",
                 format!("{:.1} Mbps", snap.bitrate_bps as f64 / 1_000_000.0),
             ),
-            ("Last frame size", format_bytes(snap.nal_bytes_last as u64)),
+            ("上一帧大小", format_bytes(snap.nal_bytes_last as u64)),
         ];
         let session_rows = [
-            ("Uptime", format_uptime(snap.uptime_secs)),
-            ("Frames captured", snap.capture_frame_count.to_string()),
-            ("Frames encoded", snap.encode_frame_count.to_string()),
-            ("Data sent", format_bytes(snap.transport_bytes_sent)),
-            ("Packets sent", snap.transport_packets_sent.to_string()),
-            ("Fragments sent", snap.transport_fragments_sent.to_string()),
-            ("Retransmitted", snap.transport_retransmits.to_string()),
-            ("USB frames dropped", snap.usb_frames_dropped.to_string()),
-            ("Target", value_or_unknown(&snap.target_addr).to_string()),
+            ("运行时长", format_uptime(snap.uptime_secs)),
+            ("已采集帧数", snap.capture_frame_count.to_string()),
+            ("已编码帧数", snap.encode_frame_count.to_string()),
+            ("已发送数据", format_bytes(snap.transport_bytes_sent)),
+            ("已发送数据包", snap.transport_packets_sent.to_string()),
+            ("已发送分片", snap.transport_fragments_sent.to_string()),
+            ("重传次数", snap.transport_retransmits.to_string()),
+            ("USB 丢帧数", snap.usb_frames_dropped.to_string()),
+            ("目标地址", value_or_unknown(&snap.target_addr).to_string()),
             (
-                "Local discovery",
+                "局域网发现",
                 if snap.mdns_active {
-                    "Active".into()
+                    "已启用".into()
                 } else {
-                    "Inactive".into()
+                    "未启用".into()
                 },
             ),
         ];
@@ -168,14 +168,14 @@ impl AnalyzerApp {
                 widgets::card_pair(
                     &mut left[0],
                     &mut right[0],
-                    |ui| show(ui, "Encoder", &encoder_rows),
-                    |ui| show(ui, "Session", &session_rows),
+                    |ui| show(ui, "编码器", &encoder_rows),
+                    |ui| show(ui, "会话", &session_rows),
                 );
             });
         } else {
-            widgets::card().show(ui, |ui| show(ui, "Encoder", &encoder_rows));
+            widgets::card().show(ui, |ui| show(ui, "编码器", &encoder_rows));
             ui.add_space(GAP - 10.0);
-            widgets::card().show(ui, |ui| show(ui, "Session", &session_rows));
+            widgets::card().show(ui, |ui| show(ui, "会话", &session_rows));
         }
     }
 }
