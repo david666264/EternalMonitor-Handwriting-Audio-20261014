@@ -1103,7 +1103,24 @@ pub fn run_gui(control: GuiControl) -> eframe::Result<()> {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon_256.png"))
         .expect("embedded icon PNG is valid");
 
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if cfg!(windows) {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+            // The control window is a light 2D UI, independent of the stream's
+            // NVENC/AMF/QSV encoder. Respect an explicit adapter preference.
+            if std::env::var_os("WGPU_POWER_PREF").is_none() {
+                setup.power_preference = eframe::egui_wgpu::wgpu::PowerPreference::LowPower;
+            }
+            let descriptor = setup.device_descriptor.clone();
+            setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+                let mut result = descriptor(adapter);
+                result.memory_hints = eframe::egui_wgpu::wgpu::MemoryHints::MemoryUsage;
+                result
+            });
+        }
+    }
     let options = eframe::NativeOptions {
+        wgpu_options,
         viewport: egui::ViewportBuilder::default()
             .with_title("EternalMonitor")
             .with_inner_size([1000.0, 640.0])

@@ -80,6 +80,11 @@ pub fn render(modes: &[VddMode]) -> String {
         ));
     }
     xml.push_str("    </resolutions>\n");
+    xml.push_str("    <gpu><friendlyname>default</friendlyname></gpu>\n");
+    xml.push_str("    <logging><SendLogsThroughPipe>false</SendLogsThroughPipe><logging>false</logging><debuglogging>false</debuglogging></logging>\n");
+    xml.push_str("    <colour><SDR10bit>false</SDR10bit><HDRPlus>false</HDRPlus><ColourFormat>RGB</ColourFormat></colour>\n");
+    xml.push_str("    <cursor><HardwareCursor>true</HardwareCursor><CursorMaxY>128</CursorMaxY><CursorMaxX>128</CursorMaxX><AlphaCursorSupport>true</AlphaCursorSupport><XorCursorSupportLevel>2</XorCursorSupportLevel></cursor>\n");
+    xml.push_str("    <edid><CustomEdid>false</CustomEdid><PreventSpoof>false</PreventSpoof><EdidCeaOverride>false</EdidCeaOverride></edid>\n");
     xml.push_str("</vdd_settings>\n");
     xml
 }
@@ -92,8 +97,59 @@ pub fn write_to(path: &Path, modes: &[VddMode]) -> io::Result<()> {
     })?;
     std::fs::create_dir_all(parent)?;
     let tmp = path.with_extension("xml.tmp");
-    std::fs::write(&tmp, render(modes))?;
+    let generated = render(modes);
+    let contents = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > 256 * 1024 => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "VDD settings too large"));
+        }
+        Ok(_) => merge_modes(&std::fs::read_to_string(path)?, &generated)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => generated,
+        Err(error) => return Err(error),
+    };
+    std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)
+}
+
+// VDD's canonical XML uses fixed, attribute-free sections for mode settings.
+// Copy their replacement bytes without interpreting entities or touching
+// unrelated GPU, cursor, colour, logging or future driver settings. A
+// noncanonical file fails closed rather than silently losing preferences.
+fn section_bounds(xml: &str, tag: &str) -> io::Result<std::ops::Range<usize>> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    if xml.matches(&open).count() != 1 || xml.matches(&close).count() != 1 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Ambiguous VDD mode section"));
+    }
+    let start = xml.find(&open).unwrap();
+    let end = xml.find(&close).unwrap() + close.len();
+    if end < start + open.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid VDD section order"));
+    }
+    Ok(start..end)
+}
+
+fn merge_modes(existing: &str, generated: &str) -> io::Result<String> {
+    if existing.matches("<vdd_settings>").count() != 1
+        || existing.matches("</vdd_settings>").count() != 1
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported VDD document"));
+    }
+    let mut merged = existing.to_string();
+    for tag in ["monitors", "global", "resolutions"] {
+        let before = section_bounds(&merged, tag)?;
+        let after = section_bounds(generated, tag)?;
+        merged.replace_range(before, &generated[after]);
+    }
+    // Upgrade the old minimal file with official driver defaults, while
+    // preserving the user's values whenever those sections already exist.
+    for tag in ["gpu", "colour", "cursor", "edid"] {
+        if !merged.contains(&format!("<{tag}>")) && !merged.contains(&format!("<{tag} ")) {
+            let defaults = section_bounds(generated, tag)?;
+            let at = merged.find("</vdd_settings>").unwrap();
+            merged.insert_str(at, &format!("    {}\n", &generated[defaults]));
+        }
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]
@@ -175,5 +231,26 @@ mod tests {
         assert!(written.contains("<width>2420</width>"));
         assert!(!path.with_extension("xml.tmp").exists(), "tmp cleaned up");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_panel_preserves_driver_preferences_and_future_sections() {
+        let original = render(&modes_for_client(1920, 1080, 60))
+            .replace("<friendlyname>default</friendlyname>", "<friendlyname>User GPU choice</friendlyname>")
+            .replace("<HardwareCursor>true</HardwareCursor>", "<HardwareCursor>false</HardwareCursor>")
+            .replace("</vdd_settings>", "<future><custom>keep me</custom></future></vdd_settings>");
+        let changed = merge_modes(&original, &render(&modes_for_client(2048, 2732, 120))).unwrap();
+        assert!(changed.contains("<width>2732</width>"));
+        assert!(changed.contains("<g_refresh_rate>120</g_refresh_rate>"));
+        assert!(changed.contains("<friendlyname>User GPU choice</friendlyname>"));
+        assert!(changed.contains("<HardwareCursor>false</HardwareCursor>"));
+        assert!(changed.contains("<future><custom>keep me</custom></future>"));
+    }
+
+    #[test]
+    fn ambiguous_mode_configuration_is_not_overwritten() {
+        let original = render(&modes_for_client(1920, 1080, 60))
+            .replace("</vdd_settings>", "<global></global></vdd_settings>");
+        assert!(merge_modes(&original, &render(&modes_for_client(2048, 2732, 120))).is_err());
     }
 }

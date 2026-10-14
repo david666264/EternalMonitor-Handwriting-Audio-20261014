@@ -742,6 +742,10 @@ fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'_> {
             opts.set("profile", "baseline");
             opts.set("zerolatency", "1");
             opts.set("rc", "cbr");
+            // FFmpeg otherwise buffers up to surfaces-1 frames even when
+            // NVENC's zerolatency flag is set. Interactive pen input needs
+            // the completed frame immediately, not a multi-frame queue.
+            opts.set("delay", "0");
         }
         "h264_amf" => {
             opts.set("usage", "lowlatency");
@@ -786,6 +790,7 @@ fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'_> {
             opts.set("tune", "ll");
             opts.set("zerolatency", "1");
             opts.set("rc", "cbr");
+            opts.set("delay", "0");
         }
         "hevc_amf" => {
             opts.set("usage", "lowlatency");
