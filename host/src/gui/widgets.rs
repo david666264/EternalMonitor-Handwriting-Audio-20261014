@@ -515,7 +515,16 @@ fn row_with_leading(
     let width = ui.available_width();
     let leading_width = if leading.is_some() { 32.0 + 14.0 } else { 0.0 };
     let gap = 20.0;
-    let text_width = (width - leading_width - control_width - gap).max(140.0);
+    // Long descriptions need a separate control line in narrow/high-DPI
+    // windows. Clamping the left column wider than the available space makes
+    // the right-aligned controls paint over the translated text.
+    let stacked = width - leading_width - control_width - gap < 180.0;
+    let text_width = if stacked {
+        (width - leading_width).max(1.0)
+    } else {
+        width - leading_width - control_width - gap
+    };
+    let mut control = Some(control);
     ui.add_space(14.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -555,13 +564,23 @@ fn row_with_leading(
                 color,
             );
         }
-        ui.add_space(gap);
-        ui.allocate_ui_with_layout(
-            vec2(ui.available_width(), height),
-            Layout::right_to_left(Align::Center),
-            control,
-        );
+        if !stacked {
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(
+                vec2(ui.available_width(), height),
+                Layout::right_to_left(Align::Center),
+                control.take().unwrap(),
+            );
+        }
     });
+    if stacked {
+        ui.add_space(8.0);
+        ui.allocate_ui_with_layout(
+            vec2(width, 32.0),
+            Layout::right_to_left(Align::Center),
+            control.take().unwrap(),
+        );
+    }
     ui.add_space(14.0);
 }
 
