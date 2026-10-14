@@ -1,0 +1,28 @@
+//! EternalMonitor host library. The binary (`main.rs`) is a thin bootstrap
+//! over these modules; end-to-end tests drive the same pipeline headlessly.
+
+pub mod audio;
+pub mod autostart;
+pub mod capture;
+pub mod clock;
+pub mod control;
+pub mod discovery;
+pub mod encoder;
+pub mod gui;
+pub mod input;
+pub mod logging;
+pub mod pairing;
+pub mod pipeline;
+pub mod settings;
+pub mod stats;
+pub mod supervisor;
+pub mod transport;
+pub mod updates;
+pub mod vdd;
+pub mod vdd_settings;
+
+#[cfg(windows)]
+pub mod gpu;
+#[cfg(not(windows))]
+#[path = "gpu_other.rs"]
+pub mod gpu;

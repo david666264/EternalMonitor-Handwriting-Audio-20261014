@@ -1,0 +1,104 @@
+name: EternalMonitor
+options:
+  bundleIdPrefix: com.eternal
+  deploymentTarget:
+    iOS: "17.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    SWIFT_STRICT_CONCURRENCY: targeted
+
+packages:
+  Opus:
+    url: https://github.com/alta/swift-opus.git
+    revision: 6f3cb6bd3ffed1fe5f06d00a962d5c191a50daf8
+
+targets:
+  EternalMonitor:
+    type: application
+    platform: iOS
+    sources:
+      - path: EternalMonitor
+    dependencies:
+      - package: Opus
+        product: Copus
+    settings:
+      base:
+        INFOPLIST_FILE: EternalMonitor/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.eternal.monitor
+        TARGETED_DEVICE_FAMILY: "2"
+        SUPPORTS_XR: "NO"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "6"
+        DEVELOPMENT_TEAM: "9X79V37Q89"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      configs:
+        # Shader source and Metal debug info belong in local builds only —
+        # under `base` this shipped inside every TestFlight/App Store build.
+        debug:
+          MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+        release:
+          MTL_ENABLE_DEBUG_INFO: NO
+
+  EternalMonitorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: EternalMonitorTests
+        excludes:
+          - "Fixtures"
+      # Decoder fixtures (tiny H.264 streams) and the golden wire vectors
+      # shared byte-for-byte with `cargo test -p eternal-wire`.
+      - path: EternalMonitorTests/Fixtures
+        type: folder
+        buildPhase: resources
+      - path: ../proto/testdata
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: EternalMonitor
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.eternal.monitor.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/EternalMonitor.app/EternalMonitor"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  EternalMonitorUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: EternalMonitorUITests
+    dependencies:
+      - target: EternalMonitor
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.eternal.monitor.uitests
+        TEST_TARGET_NAME: EternalMonitor
+        SWIFT_OBJC_BRIDGING_HEADER: EternalMonitorUITests/TouchSynthesis.h
+
+schemes:
+  EternalMonitor:
+    build:
+      targets:
+        EternalMonitor: all
+        EternalMonitorTests: [test]
+        EternalMonitorUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - EternalMonitorTests
+        - EternalMonitorUITests
+    profile:
+      config: Release
+    archive:
+      config: Release

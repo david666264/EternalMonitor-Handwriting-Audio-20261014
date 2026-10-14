@@ -1,0 +1,32 @@
+.claude/
+CLAUDE.md
+CODEBASE.md
+ROADMAP.md
+.cargo/
+.cargo-home/
+.rustup-home/
+target/
+dist/
+tools/downloads/
+tools/ffmpeg-7.1/
+EternalMonitor.png
+GIT_POLICY.md
+
+# Release artifacts produced by scripts/package.ps1
+/EternalMonitor-*-windows/
+/EternalMonitor-*-windows.zip
+
+# Installer build staging + output (scripts/build-installer.ps1)
+/build/
+
+# iOS archive/export artifacts
+ios/build/
+
+# Generated Xcode project — project.yml is the source of truth (run `xcodegen generate` in ios/)
+ios/EternalMonitor.xcodeproj/
+
+# Python bytecode from the Windows verification wrapper
+__pycache__/
+# Keep only accepted GUI references. CI uploads comparison images separately.
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png
