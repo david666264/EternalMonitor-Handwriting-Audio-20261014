@@ -307,7 +307,7 @@ mod tests {
         let pcm: Vec<_> = (0..super::super::FRAME_SAMPLES)
             .map(|index| {
                 let t = index as f64 / f64::from(SAMPLE_RATE);
-                let wave = |frequency| (std::f64::consts::TAU * frequency * t).sin();
+                let wave = |frequency: f64| (std::f64::consts::TAU * frequency * t).sin();
                 (
                     (0.25 * wave(220.0) + 0.125 * wave(1397.0) + 0.0625 * wave(3911.0))
                         as f32,
