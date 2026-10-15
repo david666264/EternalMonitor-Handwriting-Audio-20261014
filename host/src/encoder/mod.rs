@@ -622,7 +622,14 @@ fn prefer_nvenc_d3d11(
 ) -> bool {
     is_windows
         && matches!(encoder_name, "h264_nvenc" | "hevc_nvenc")
-        && pixel_format == ffmpeg_next::format::Pixel::YUV420P
+        // These are software input formats. FFmpeg copies packed RGB into
+        // an NVENC input buffer while retaining the supplied DirectX device.
+        && matches!(
+            pixel_format,
+            ffmpeg_next::format::Pixel::YUV420P
+                | ffmpeg_next::format::Pixel::BGRA
+                | ffmpeg_next::format::Pixel::BGRZ
+        )
         && preference != NvencDevicePreference::Cuda
 }
 
@@ -1648,17 +1655,25 @@ mod tests {
             assert_eq!(NvencDevicePreference::from_override(Some(value)), Cuda);
         }
         for name in ["h264_nvenc", "hevc_nvenc"] {
-            for preference in [Auto, D3d11] {
-                assert!(prefer_nvenc_d3d11(true, name, Pixel::YUV420P, preference));
-                assert!(!prefer_nvenc_d3d11(false, name, Pixel::YUV420P, preference));
-                for pixel in [Pixel::BGRA, Pixel::BGRZ, Pixel::NV12] {
+            for pixel in [Pixel::YUV420P, Pixel::BGRA, Pixel::BGRZ] {
+                for preference in [Auto, D3d11] {
+                    assert!(prefer_nvenc_d3d11(true, name, pixel, preference));
+                    assert!(!prefer_nvenc_d3d11(false, name, pixel, preference));
+                }
+                assert!(!prefer_nvenc_d3d11(true, name, pixel, Cuda));
+            }
+            for preference in [Auto, D3d11, Cuda] {
+                for pixel in [Pixel::NV12, Pixel::YUV444P, Pixel::RGBA] {
                     assert!(!prefer_nvenc_d3d11(true, name, pixel, preference));
                 }
             }
-            assert!(!prefer_nvenc_d3d11(true, name, Pixel::YUV420P, Cuda));
         }
         for name in ["libx264", "libx265", "h264_amf", "h264_qsv", "unknown"] {
-            assert!(!prefer_nvenc_d3d11(true, name, Pixel::YUV420P, Auto));
+            for pixel in [Pixel::YUV420P, Pixel::BGRA, Pixel::BGRZ] {
+                for preference in [Auto, D3d11, Cuda] {
+                    assert!(!prefer_nvenc_d3d11(true, name, pixel, preference));
+                }
+            }
         }
     }
 
