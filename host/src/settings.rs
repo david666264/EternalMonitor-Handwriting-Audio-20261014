@@ -17,6 +17,10 @@ pub struct SettingsFile {
     pub target_ip: Option<String>,
     #[serde(default)]
     pub encoder_override: Option<String>,
+    /// Optional machine-verified control-window backend. Does not select the
+    /// capture or encoder device; an explicit WGPU_BACKEND takes precedence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui_backend: Option<String>,
     #[serde(default)]
     pub encoder_input: crate::encoder::input::EncoderInput,
     #[serde(default = "default_true")]
@@ -58,6 +62,7 @@ impl Default for SettingsFile {
             max_dgram: default_max_dgram(),
             target_ip: None,
             encoder_override: None,
+            gui_backend: None,
             encoder_input: Default::default(),
             check_for_updates: true,
             capture_display: None,
@@ -175,6 +180,7 @@ mod tests {
     fn old_settings_default_packet_size_and_new_settings_round_trip() {
         let old = r#"{"bitrate_mbps":15,"target_fps":60,"start_on_boot":false}"#;
         let parsed: SettingsFile = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.gui_backend, None);
         assert!(parsed.require_pairing);
         assert!(parsed.auth_token_hex.is_empty());
         assert!(
@@ -188,6 +194,7 @@ mod tests {
         );
         let settings = SettingsFile {
             max_dgram: 1200,
+            gui_backend: Some("opengl".into()),
             stream_audio: false,
             require_pairing: false,
             auth_token_hex: "0123456789abcdef0123456789abcdef".into(),
@@ -195,6 +202,7 @@ mod tests {
         };
         let json = serde_json::to_string(&settings).unwrap();
         let parsed: SettingsFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.gui_backend.as_deref(), Some("opengl"));
         assert!(!parsed.require_pairing);
         assert_eq!(parsed.auth_token_hex, settings.auth_token_hex);
         assert!(

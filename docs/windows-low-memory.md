@@ -33,3 +33,13 @@ transient can exceed the previous 548-byte capture budget. Such packets must
 reach the receiver without truncation rather than disabling the audio session.
 The audio bitrate, frame duration, stereo layout and VBR settings are unchanged.
 The conservative UDP capture budget and UDP sender limit are retained.
+
+## Per-machine control-window backend
+
+The optional user setting `gui_backend` can select `opengl` on a tested Windows
+machine. Absence, `auto`, or unknown values leave the existing backend selection
+unchanged. An explicit process `WGPU_BACKEND` override always takes precedence.
+This preference affects only the control window, not desktop capture or NVENC.
+It is retained when other settings are saved and requires restarting the host.
+Remove the preference or use an explicit backend override to compare the original
+renderer. It is not enabled for other machines by default.

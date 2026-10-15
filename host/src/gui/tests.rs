@@ -2,6 +2,71 @@ use super::page_stream::{audio_summary, usb_cable_notice, usb_summary};
 use super::*;
 
 #[test]
+fn local_backend_only_uses_explicit_windows_preferences_without_an_env_override() {
+    use eframe::egui_wgpu::wgpu::Backends;
+
+    for value in ["opengl", " OPENGL "] {
+        assert_eq!(
+            local_gui_backend(true, false, Some(value)),
+            Some(Backends::GL)
+        );
+        assert_eq!(local_gui_backend(true, true, Some(value)), None);
+        assert_eq!(local_gui_backend(false, false, Some(value)), None);
+    }
+    for value in [
+        None,
+        Some(""),
+        Some("auto"),
+        Some("vulkan"),
+        Some("mistyped"),
+    ] {
+        assert_eq!(local_gui_backend(true, false, value), None);
+    }
+}
+
+#[test]
+fn gui_settings_snapshot_keeps_the_local_backend_when_other_settings_change() {
+    // Construct only UI state: no renderer, user settings, device enumeration,
+    // autostart registry or real settings file is accessed by this regression.
+    let (supervisor_tx, _) = std::sync::mpsc::channel();
+    let mut app = AnalyzerApp {
+        control: GuiControl {
+            shared: crate::control::SharedControl::new(9876, 15_000_000),
+            supervisor_tx,
+        },
+        page: Page::Settings,
+        settings_bitrate_mbps: 15.0,
+        settings_fps_target: 120,
+        settings_encoder_input: Default::default(),
+        settings_check_updates: false,
+        settings_gui_backend: Some("opengl".into()),
+        available_update: Default::default(),
+        update_dismissed: false,
+        settings_packet_size: 1400,
+        settings_error: None,
+        settings_start_on_boot: false,
+        settings_hevc_enabled: false,
+        settings_vdd_match: true,
+        settings_dirty_at: None,
+        settings_encoder_choice: ENCODER_AUTO_LABEL.into(),
+        settings_capture_display: String::new(),
+        available_outputs: Vec::new(),
+        restart_pending: false,
+        show_qr_modal: false,
+        qr_cache: None,
+        copied: None,
+        history: History::new(),
+        logo: None,
+    };
+    app.settings_bitrate_mbps = 12.0;
+    let json = serde_json::to_string(&app.settings_snapshot()).unwrap();
+    let saved: SettingsFile = serde_json::from_str(&json).unwrap();
+    assert_eq!(saved.bitrate_mbps, 12.0);
+    assert_eq!(saved.gui_backend.as_deref(), Some("opengl"));
+    assert!(!saved.check_for_updates);
+}
+
+#[test]
 fn audio_row_reports_rate_and_keeps_failure_separate_from_video() {
     let mut audio = crate::audio::AudioStats::started("USB Audio Device");
     audio.kbps = 128.0;

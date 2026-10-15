@@ -263,6 +263,7 @@ pub struct AnalyzerApp {
     settings_fps_target: u32,
     settings_encoder_input: crate::encoder::input::EncoderInput,
     settings_check_updates: bool,
+    settings_gui_backend: Option<String>,
     available_update: crate::updates::AvailableUpdate,
     update_dismissed: bool,
     settings_packet_size: u32,
@@ -386,6 +387,7 @@ impl AnalyzerApp {
         Self {
             settings_encoder_input: encoder_input,
             settings_check_updates: persisted.check_for_updates,
+            settings_gui_backend: persisted.gui_backend,
             available_update,
             update_dismissed: false,
             settings_packet_size: control.shared.max_dgram.load(Ordering::SeqCst),
@@ -411,6 +413,10 @@ impl AnalyzerApp {
     }
 
     fn persist_settings(&self) {
+        self.settings_snapshot().save();
+    }
+
+    fn settings_snapshot(&self) -> SettingsFile {
         let encoder_override = ENCODER_CHOICES
             .iter()
             .find(|(label, _)| *label == self.settings_encoder_choice)
@@ -422,7 +428,7 @@ impl AnalyzerApp {
                 }
             });
         let pairing = self.control.shared.pairing.lock();
-        let file = SettingsFile {
+        SettingsFile {
             bitrate_mbps: self.settings_bitrate_mbps,
             target_fps: self.settings_fps_target,
             max_dgram: self.settings_packet_size as u16,
@@ -430,6 +436,7 @@ impl AnalyzerApp {
             // older settings.json still parse.
             target_ip: None,
             encoder_override,
+            gui_backend: self.settings_gui_backend.clone(),
             encoder_input: self.settings_encoder_input,
             check_for_updates: self.settings_check_updates,
             capture_display: if self.settings_capture_display.is_empty() {
@@ -443,8 +450,7 @@ impl AnalyzerApp {
             start_on_boot: self.settings_start_on_boot,
             require_pairing: pairing.required,
             auth_token_hex: crate::pairing::token_hex(&pairing.token()),
-        };
-        file.save();
+        }
     }
 }
 
@@ -1098,6 +1104,23 @@ pub fn detect_local_ip(listen_port: u16) -> String {
     format!("unknown:{listen_port}")
 }
 
+/// Only apply a backend explicitly recorded for this Windows machine. Keep
+/// wgpu's normal behavior for unknown values and any process-level override.
+fn local_gui_backend(
+    is_windows: bool,
+    has_environment_override: bool,
+    value: Option<&str>,
+) -> Option<eframe::egui_wgpu::wgpu::Backends> {
+    if is_windows
+        && !has_environment_override
+        && value.is_some_and(|value| value.trim().eq_ignore_ascii_case("opengl"))
+    {
+        Some(eframe::egui_wgpu::wgpu::Backends::GL)
+    } else {
+        None
+    }
+}
+
 /// Launch the GUI window. Blocks the calling thread.
 pub fn run_gui(control: GuiControl) -> eframe::Result<()> {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon_256.png"))
@@ -1109,6 +1132,14 @@ pub fn run_gui(control: GuiControl) -> eframe::Result<()> {
         .with_surface_config(eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY);
     if cfg!(windows) {
         if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+            let persisted = SettingsFile::load();
+            if let Some(backend) = local_gui_backend(
+                true,
+                std::env::var_os("WGPU_BACKEND").is_some(),
+                persisted.gui_backend.as_deref(),
+            ) {
+                setup.instance_descriptor.backends = backend;
+            }
             // The control window is a light 2D UI, independent of the stream's
             // NVENC/AMF/QSV encoder. Respect an explicit adapter preference.
             if std::env::var_os("WGPU_POWER_PREF").is_none() {
