@@ -1140,6 +1140,12 @@ pub fn run_gui(control: GuiControl) -> eframe::Result<()> {
             ) {
                 setup.instance_descriptor.backends = backend;
             }
+            tracing::info!(
+                saved_backend = ?persisted.gui_backend,
+                environment_override = std::env::var_os("WGPU_BACKEND").is_some(),
+                enabled_backends = ?setup.instance_descriptor.backends,
+                "Control window graphics configuration"
+            );
             // The control window is a light 2D UI, independent of the stream's
             // NVENC/AMF/QSV encoder. Respect an explicit adapter preference.
             if std::env::var_os("WGPU_POWER_PREF").is_none() {
