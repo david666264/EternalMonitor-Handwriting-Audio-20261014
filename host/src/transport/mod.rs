@@ -39,6 +39,70 @@ use usb::{LinkEvent, TransportLinks};
 /// restart (seq reset to ~1) reliably instead of inferring it from a sequence-number gap.
 static STREAM_EPOCH_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+// Diagnostics are opt-in and sampled only on video work already being done.
+// No extra timer, clock read or log is added to the disabled media path.
+pub(super) fn latency_probe_enabled() -> bool {
+    std::env::var("ETERNAL_LATENCY_PROBE").is_ok_and(|value| value.trim() == "1")
+}
+
+#[derive(Default)]
+pub(super) struct LatencySamples {
+    pub(super) count: u64,
+    total_us: u128,
+    pub(super) max_us: u64,
+}
+
+impl LatencySamples {
+    pub(super) fn record_us(&mut self, value: u64) {
+        self.count = self.count.saturating_add(1);
+        self.total_us = self.total_us.saturating_add(u128::from(value));
+        self.max_us = self.max_us.max(value);
+    }
+
+    pub(super) fn mean_us(&self) -> u64 {
+        (self.total_us / u128::from(self.count.max(1))).min(u128::from(u64::MAX)) as u64
+    }
+}
+
+struct TransportLatencyProbe {
+    reported_at: Instant,
+    age: LatencySamples,
+    queue_depth_max: usize,
+}
+
+impl TransportLatencyProbe {
+    fn new() -> Self {
+        Self {
+            reported_at: Instant::now(),
+            age: LatencySamples::default(),
+            queue_depth_max: 0,
+        }
+    }
+
+    fn record(&mut self, timestamp: Instant, queue_depth: usize) {
+        let now = Instant::now();
+        let age_us = now
+            .saturating_duration_since(timestamp)
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        self.age.record_us(age_us);
+        self.queue_depth_max = self.queue_depth_max.max(queue_depth);
+        if now.saturating_duration_since(self.reported_at) >= Duration::from_secs(2) {
+            info!(
+                frames = self.age.count,
+                nal_dequeue_age_us_mean = self.age.mean_us(),
+                nal_dequeue_age_us_max = self.age.max_us,
+                nal_queue_depth_max = self.queue_depth_max,
+                nal_queue_depth_now = queue_depth,
+                "Latency probe: transport dequeue"
+            );
+            self.reported_at = now;
+            self.age = LatencySamples::default();
+            self.queue_depth_max = 0;
+        }
+    }
+}
+
 /// Stream parameters advertised in HELLO_ACK and heartbeats.
 struct SharedConfigSource<'a> {
     shared: &'a SharedControl,
@@ -218,6 +282,7 @@ pub async fn start_sender(
     liveness_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pen_tick = tokio::time::interval(Duration::from_millis(50));
     pen_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut latency_probe = latency_probe_enabled().then(TransportLatencyProbe::new);
 
     loop {
         tokio::select! {
@@ -298,6 +363,9 @@ pub async fn start_sender(
                                                 nacks = report.nacks_sent, jitter_us = report.jitter_us,
                                                 decode_fps_x10 = report.decode_fps_x10,
                                                 decode_depth = report.decode_depth,
+                                                assembler_depth = report.assembler_depth,
+                                                e2e_latency_ms_x10 = report.e2e_latency_ms_x10,
+                                                rtt_ms_x10 = report.rtt_ms_x10,
                                                 retransmits,
                                                 "Receiver report");
                                             let ceiling =
@@ -359,6 +427,9 @@ pub async fn start_sender(
             }
             nal_opt = nal_rx.recv() => {
                 let Some(nal) = nal_opt else { break; };
+                if let Some(probe) = &mut latency_probe {
+                    probe.record(nal.timestamp, nal_rx.len());
+                }
                 let Some(session_id) = shared.session.lock().session_id() else { continue; };
                 let target_addr = *shared.target_addr.lock();
                 if target_addr.link == LinkId::Udp && target_addr.addr.is_none_or(|a| a.ip().is_unspecified() || a.port() == 0) {
@@ -640,6 +711,18 @@ mod tests {
         encode_control, parse_control, ControlMessage, Hello2, Nack, Ping, CAP_DECODE_H264,
         FEATURE_SUPPORTS_NACK,
     };
+
+    #[test]
+    fn latency_probe_reports_microsecond_samples_without_an_empty_window_division() {
+        let mut samples = LatencySamples::default();
+        assert_eq!(samples.mean_us(), 0);
+        for value in [1_000, 3_000, 2_000] {
+            samples.record_us(value);
+        }
+        assert_eq!(samples.count, 3);
+        assert_eq!(samples.mean_us(), 2_000);
+        assert_eq!(samples.max_us, 3_000);
+    }
 
     #[tokio::test]
     async fn repairs_current_and_previous_frames_before_the_pacing_wait_ends() {

@@ -19,6 +19,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::task::JoinHandle;
 
+use super::{latency_probe_enabled, LatencySamples};
+
 pub const PREAMBLE: &[u8; 8] = b"EMLINK\x01\x00";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const FRAME_LIMIT: usize = 2;
@@ -498,15 +500,127 @@ impl Drop for FramedLink {
     }
 }
 
+struct UsbFrameLatency {
+    dequeued_at: Instant,
+    capture_age_us: Option<u64>,
+    queue_depth: usize,
+    video_write_us: u64,
+    written_packets: usize,
+}
+
+impl UsbFrameLatency {
+    fn new(frame: &Frame, queue_depth: usize) -> Self {
+        // Outbound video originated in this host, so the first media header
+        // uses the same process-wide clock. Never mix in a receiver clock.
+        let capture_ts_us = frame
+            .datagrams
+            .first()
+            .and_then(|packet| MediaHeader::decode(packet).ok())
+            .map(|(header, _)| header.capture_ts_us)
+            .filter(|timestamp| *timestamp != 0);
+        let capture_age_us =
+            capture_ts_us.and_then(|timestamp| crate::clock::host_now_us().checked_sub(timestamp));
+        Self {
+            dequeued_at: Instant::now(),
+            capture_age_us,
+            queue_depth,
+            video_write_us: 0,
+            written_packets: 0,
+        }
+    }
+
+    fn record_write(&mut self, started_at: Instant) {
+        let elapsed_us = started_at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.video_write_us = self.video_write_us.saturating_add(elapsed_us);
+        self.written_packets += 1;
+    }
+}
+
+struct UsbLatencyProbe {
+    reported_at: Instant,
+    capture_age: LatencySamples,
+    video_write: LatencySamples,
+    frame_elapsed: LatencySamples,
+    queue_depth_max: usize,
+    incomplete_frames: u64,
+    last_frames_dropped: u64,
+}
+
+impl UsbLatencyProbe {
+    fn new(frames_dropped: u64) -> Self {
+        Self {
+            reported_at: Instant::now(),
+            capture_age: LatencySamples::default(),
+            video_write: LatencySamples::default(),
+            frame_elapsed: LatencySamples::default(),
+            queue_depth_max: 0,
+            incomplete_frames: 0,
+            last_frames_dropped: frames_dropped,
+        }
+    }
+
+    fn record(&mut self, frame: UsbFrameLatency, expected_packets: usize, stats: &FramedStats) {
+        let now = Instant::now();
+        if let Some(age_us) = frame.capture_age_us {
+            self.capture_age.record_us(age_us);
+        }
+        self.video_write.record_us(frame.video_write_us);
+        // Unlike video_write, this wall time includes existing audio/control
+        // interleaving. Neither number is an iPad playback acknowledgement.
+        self.frame_elapsed.record_us(
+            now.saturating_duration_since(frame.dequeued_at)
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64,
+        );
+        self.queue_depth_max = self.queue_depth_max.max(frame.queue_depth);
+        self.incomplete_frames += u64::from(frame.written_packets != expected_packets);
+        if now.saturating_duration_since(self.reported_at) >= Duration::from_secs(2) {
+            let frames_dropped = stats.frames_dropped.load(Ordering::Relaxed);
+            tracing::info!(
+                frames = self.video_write.count,
+                capture_age_samples = self.capture_age.count,
+                usb_dequeue_age_us_mean = self.capture_age.mean_us(),
+                usb_dequeue_age_us_max = self.capture_age.max_us,
+                usb_video_write_us_mean = self.video_write.mean_us(),
+                usb_video_write_us_max = self.video_write.max_us,
+                usb_frame_elapsed_us_mean = self.frame_elapsed.mean_us(),
+                usb_frame_elapsed_us_max = self.frame_elapsed.max_us,
+                usb_queue_depth_max = self.queue_depth_max,
+                usb_queue_depth_at_last_dequeue = frame.queue_depth,
+                usb_frames_dropped = frames_dropped.saturating_sub(self.last_frames_dropped),
+                usb_incomplete_frames = self.incomplete_frames,
+                "Latency probe: USB writer"
+            );
+            self.reported_at = now;
+            self.capture_age = LatencySamples::default();
+            self.video_write = LatencySamples::default();
+            self.frame_elapsed = LatencySamples::default();
+            self.queue_depth_max = 0;
+            self.incomplete_frames = 0;
+            self.last_frames_dropped = frames_dropped;
+        }
+    }
+}
+
 async fn write_loop(mut writer: impl AsyncWrite + Unpin, state: &WriterState) -> io::Result<()> {
     let mut closed = state.closed.subscribe();
+    let mut latency_probe = latency_probe_enabled()
+        .then(|| UsbLatencyProbe::new(state.stats.frames_dropped.load(Ordering::Relaxed)));
     loop {
         if *closed.borrow() {
             return Ok(());
         }
-        let (control, frame) = match state.take_priority() {
-            Some(packet) => (Some(packet), None),
-            None => (None, state.queue.lock().video.pop()),
+        let (control, frame, queue_depth) = match state.take_priority() {
+            Some(packet) => (Some(packet), None, 0),
+            None => {
+                let mut queue = state.queue.lock();
+                let depth = if latency_probe.is_some() {
+                    queue.video.frames.len()
+                } else {
+                    0
+                };
+                (None, queue.video.pop(), depth)
+            }
         };
         if let Some(packet) = control {
             tokio::select! {
@@ -516,13 +630,20 @@ async fn write_loop(mut writer: impl AsyncWrite + Unpin, state: &WriterState) ->
             }
         } else if let Some((revision, frame)) = frame {
             let count = frame.datagrams.len();
+            let mut frame_latency = latency_probe
+                .as_ref()
+                .map(|_| UsbFrameLatency::new(&frame, queue_depth));
             for (index, packet) in frame.datagrams.into_iter().enumerate() {
                 // Never cancel a partial packet and then reuse the byte stream.
                 // Finish its framing before abandoning the rest of a stale frame.
+                let write_started_at = frame_latency.as_ref().map(|_| Instant::now());
                 tokio::select! {
                     biased;
                     _ = closed.changed() => return Ok(()),
                     sent = write_datagram(&mut writer, &packet) => sent?,
+                }
+                if let (Some(probe), Some(started_at)) = (&mut frame_latency, write_started_at) {
+                    probe.record_write(started_at);
                 }
                 if index + 1 < count && state.queue.lock().video.revision != revision {
                     state.record_drops(1);
@@ -537,6 +658,9 @@ async fn write_loop(mut writer: impl AsyncWrite + Unpin, state: &WriterState) ->
                         sent = write_datagram(&mut writer, &priority) => sent?,
                     }
                 }
+            }
+            if let (Some(probe), Some(frame_latency)) = (&mut latency_probe, frame_latency) {
+                probe.record(frame_latency, count, &state.stats);
             }
         } else {
             tokio::select! {
@@ -607,6 +731,23 @@ mod tests {
         }
         .encode_into(&mut bytes);
         bytes
+    }
+
+    #[test]
+    fn latency_probe_skips_invalid_capture_ages_without_touching_queued_video() {
+        for capture_ts_us in [0, u64::MAX] {
+            let mut bytes = packet(1, true, 0, 1, 64);
+            let (mut header, _) = MediaHeader::decode(&bytes).unwrap();
+            header.capture_ts_us = capture_ts_us;
+            header.encode_into(&mut bytes);
+            let mut queue = VideoQueue::default();
+            queue.push(&bytes).unwrap();
+            let (_, frame) = queue.pop().unwrap();
+            let probe = UsbFrameLatency::new(&frame, 1);
+            assert!(probe.capture_age_us.is_none());
+            assert_eq!(probe.queue_depth, 1);
+            assert_eq!(frame.datagrams, vec![bytes]);
+        }
     }
 
     #[test]

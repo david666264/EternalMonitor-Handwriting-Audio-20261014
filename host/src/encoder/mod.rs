@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::slice;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -28,6 +28,80 @@ const CHANNEL_CAPACITY: usize = 4;
 const AMF_CAPTURE_PACKET_LIMIT: u64 = 120;
 const AMF_IDR_WARNING_PACKET: u64 = 60;
 const AMF_FORCED_INTRA_PERIOD: u64 = 30;
+
+#[derive(Default)]
+struct EncoderLatencySamples {
+    count: u64,
+    total_us: u128,
+    max_us: u128,
+}
+
+impl EncoderLatencySamples {
+    fn record(&mut self, us: u128) {
+        self.count += 1;
+        self.total_us += us;
+        self.max_us = self.max_us.max(us);
+    }
+
+    fn mean_us(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.total_us as f64 / self.count as f64
+        }
+    }
+}
+
+/// Opt-in aggregate timings, with no per-frame logs or extra clock reads when disabled.
+/// Codec time includes only send_frame/receive_packet calls; conversion and output-channel
+/// waits remain separate so backpressure cannot masquerade as a slow hardware codec.
+struct EncoderLatencyProbe {
+    window_started: Instant,
+    take_age: EncoderLatencySamples,
+    copy_convert: EncoderLatencySamples,
+    codec_wait: EncoderLatencySamples,
+    nal_send_wait: EncoderLatencySamples,
+}
+
+impl EncoderLatencyProbe {
+    fn enabled(value: Option<&str>) -> bool {
+        value.is_some_and(|value| value.trim() == "1")
+    }
+
+    fn new(now: Instant) -> Self {
+        Self {
+            window_started: now,
+            take_age: EncoderLatencySamples::default(),
+            copy_convert: EncoderLatencySamples::default(),
+            codec_wait: EncoderLatencySamples::default(),
+            nal_send_wait: EncoderLatencySamples::default(),
+        }
+    }
+
+    fn flush_if_due(&mut self, now: Instant) {
+        let window = now.saturating_duration_since(self.window_started);
+        if window < Duration::from_secs(2) {
+            return;
+        }
+        info!(
+            window_ms = window.as_millis() as u64,
+            take_count = self.take_age.count,
+            take_age_mean_us = self.take_age.mean_us(),
+            take_age_max_us = self.take_age.max_us as u64,
+            copy_convert_count = self.copy_convert.count,
+            copy_convert_mean_us = self.copy_convert.mean_us(),
+            copy_convert_max_us = self.copy_convert.max_us as u64,
+            codec_count = self.codec_wait.count,
+            codec_wait_mean_us = self.codec_wait.mean_us(),
+            codec_wait_max_us = self.codec_wait.max_us as u64,
+            nal_send_count = self.nal_send_wait.count,
+            nal_send_wait_mean_us = self.nal_send_wait.mean_us(),
+            nal_send_wait_max_us = self.nal_send_wait.max_us as u64,
+            "Encoder latency probe"
+        );
+        *self = Self::new(now);
+    }
+}
 
 /// Encoded H.264 NAL unit ready for transport.
 #[derive(Debug, Clone)]
@@ -142,8 +216,14 @@ fn run_encode_loop(
     let fault_after: Option<u64> = std::env::var("ETERNAL_FAULT_ENCODER_AFTER")
         .ok()
         .and_then(|v| v.trim().parse().ok());
+    let probe_setting = std::env::var("ETERNAL_LATENCY_PROBE").ok();
+    let mut latency_probe = EncoderLatencyProbe::enabled(probe_setting.as_deref())
+        .then(|| EncoderLatencyProbe::new(Instant::now()));
 
     while let Some(raw_frame) = frames.blocking_take() {
+        if let Some(probe) = latency_probe.as_mut() {
+            probe.take_age.record(raw_frame.timestamp.elapsed().as_micros());
+        }
         if !shared.running.load(Ordering::SeqCst)
             || !crate::supervisor::generation_is_current(generation)
         {
@@ -314,6 +394,7 @@ fn run_encode_loop(
         let current_bitrate = encoder.opened_bitrate;
         let opened_is_hevc = is_hevc_encoder(&encoder.opened_encoder);
 
+        let probe_conversion_start = latency_probe.as_ref().map(|_| Instant::now());
         let src_row_bytes = (raw_frame.width * 4) as usize;
         #[cfg(target_os = "macos")]
         let converted = match encoder.native_converter.as_ref().map(|converter| {
@@ -349,6 +430,9 @@ fn run_encode_loop(
                 scaler.run(bgra, &mut encoder.frame)?;
             }
         }
+        if let (Some(probe), Some(start)) = (latency_probe.as_mut(), probe_conversion_start) {
+            probe.copy_convert.record(start.elapsed().as_micros());
+        }
         // Conversion finished synchronously. Recycle capture's buffer before
         // the codec or sender can block, including on the direct macOS path.
         drop(raw_frame.data);
@@ -378,9 +462,17 @@ fn run_encode_loop(
 
         let encode_start = Instant::now();
         encoder.encoder.send_frame(&encoder.frame)?;
+        let mut probe_codec_us = latency_probe
+            .as_ref()
+            .map(|_| encode_start.elapsed().as_micros());
 
         loop {
-            match encoder.encoder.receive_packet(&mut encoder.packet) {
+            let probe_receive_start = latency_probe.as_ref().map(|_| Instant::now());
+            let received = encoder.encoder.receive_packet(&mut encoder.packet);
+            if let (Some(total), Some(start)) = (probe_codec_us.as_mut(), probe_receive_start) {
+                *total += start.elapsed().as_micros();
+            }
+            match received {
                 Ok(()) => {
                     let encode_us = encode_start.elapsed().as_micros();
                     let packet_bytes = encoder.packet.data().unwrap_or_default();
@@ -478,7 +570,12 @@ fn run_encode_loop(
                         is_keyframe,
                     };
 
-                    if tx.blocking_send(nal).is_err() {
+                    let probe_send_start = latency_probe.as_ref().map(|_| Instant::now());
+                    let sent = tx.blocking_send(nal);
+                    if let (Some(probe), Some(start)) = (latency_probe.as_mut(), probe_send_start) {
+                        probe.nal_send_wait.record(start.elapsed().as_micros());
+                    }
+                    if sent.is_err() {
                         info!("NAL channel closed, stopping encoder");
                         return Ok(());
                     }
@@ -486,6 +583,10 @@ fn run_encode_loop(
                 Err(e) if is_eagain(&e) => break,
                 Err(e) => return Err(e.into()),
             }
+        }
+        if let (Some(probe), Some(codec_us)) = (latency_probe.as_mut(), probe_codec_us) {
+            probe.codec_wait.record(codec_us);
+            probe.flush_if_due(Instant::now());
         }
     }
 
@@ -679,6 +780,14 @@ impl EncoderState {
             }
             encoder.set_max_b_frames(0);
             encoder.set_bit_rate(bitrate_bps.max(500_000) as usize);
+            if let Some(buffer_bits) = nvenc_vbv_buffer_bits(
+                encoder_name,
+                bitrate_bps,
+                target_fps,
+                std::env::var("ETERNAL_NVENC_VBV_FRAMES").ok().as_deref(),
+            ) {
+                unsafe { (*encoder.as_mut_ptr()).rc_buffer_size = buffer_bits };
+            }
             if encoder_name == "libx264" {
                 // x264 can only reconfigure bitrate when VBV was enabled at open.
                 encoder.set_max_bit_rate(bitrate_bps.max(500_000) as usize);
@@ -864,11 +973,46 @@ fn nvenc_surface_count(is_windows: bool, value: Option<&str>) -> Option<&'static
 
 fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'static> {
     let surface_override = std::env::var("ETERNAL_NVENC_SURFACES").ok();
-    encoder_options_for_platform(
+    let mut options = encoder_options_for_platform(
         encoder_name,
         cfg!(target_os = "windows"),
         surface_override.as_deref(),
-    )
+    );
+    if matches!(encoder_name, "h264_nvenc" | "hevc_nvenc") {
+        if let Some(tune) = nvenc_tune_override(std::env::var("ETERNAL_NVENC_TUNE").ok().as_deref()) {
+            options.set("tune", tune);
+        }
+    }
+    options
+}
+
+// Explicit process-only A/B controls. Missing or invalid values preserve the
+// existing stream; they never change saved quality or encoder preferences.
+fn nvenc_tune_override(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some("ll") => Some("ll"),
+        Some("ull") => Some("ull"),
+        _ => None,
+    }
+}
+
+fn nvenc_vbv_buffer_bits(
+    encoder_name: &str,
+    bitrate_bps: u32,
+    fps: u32,
+    value: Option<&str>,
+) -> Option<i32> {
+    if !matches!(encoder_name, "h264_nvenc" | "hevc_nvenc") {
+        return None;
+    }
+    let frames = match value.map(str::trim) {
+        Some("1") => 1_u64,
+        Some("2") => 2,
+        Some("4") => 4,
+        _ => return None,
+    };
+    Some((u64::from(bitrate_bps.max(500_000)) * frames / u64::from(fps.max(1)))
+        .clamp(1, i32::MAX as u64) as i32)
 }
 
 fn encoder_options_for_platform(
@@ -1436,6 +1580,61 @@ fn find_ffmpeg_exe() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvenc_latency_experiments_are_opt_in_and_do_not_touch_other_encoders() {
+        assert_eq!(nvenc_tune_override(None), None);
+        assert_eq!(nvenc_tune_override(Some("invalid")), None);
+        assert_eq!(nvenc_tune_override(Some(" ull ")), Some("ull"));
+        assert_eq!(nvenc_tune_override(Some("ll")), Some("ll"));
+        for name in ["h264_nvenc", "hevc_nvenc"] {
+            assert_eq!(nvenc_vbv_buffer_bits(name, 12_000_000, 120, None), None);
+            assert_eq!(nvenc_vbv_buffer_bits(name, 12_000_000, 120, Some("0")), None);
+            assert_eq!(nvenc_vbv_buffer_bits(name, 12_000_000, 120, Some("1")), Some(100_000));
+            assert_eq!(nvenc_vbv_buffer_bits(name, 12_000_000, 120, Some("2")), Some(200_000));
+            assert_eq!(nvenc_vbv_buffer_bits(name, u32::MAX, 0, Some("4")), Some(i32::MAX));
+        }
+        for name in ["libx264", "h264_amf", "h264_qsv"] {
+            assert_eq!(nvenc_vbv_buffer_bits(name, 12_000_000, 120, Some("1")), None);
+        }
+    }
+
+    #[test]
+    fn latency_probe_is_explicit_and_does_not_accumulate_across_windows() {
+        for value in [None, Some(""), Some("0"), Some("true"), Some("2")] {
+            assert!(!EncoderLatencyProbe::enabled(value));
+        }
+        assert!(EncoderLatencyProbe::enabled(Some(" 1 ")));
+
+        let started = Instant::now();
+        let mut probe = EncoderLatencyProbe::new(started);
+        probe.take_age.record(10);
+        probe.take_age.record(30);
+        probe.copy_convert.record(7);
+        probe.codec_wait.record(11);
+        probe.nal_send_wait.record(13);
+        assert_eq!(probe.take_age.mean_us(), 20.0);
+        assert_eq!(probe.take_age.max_us, 30);
+
+        probe.flush_if_due(started + Duration::from_millis(1999));
+        assert_eq!(probe.take_age.count, 2);
+        let next_window = started + Duration::from_secs(2);
+        probe.flush_if_due(next_window);
+        assert_eq!(probe.window_started, next_window);
+        for samples in [
+            &probe.take_age,
+            &probe.copy_convert,
+            &probe.codec_wait,
+            &probe.nal_send_wait,
+        ] {
+            assert_eq!(samples.count, 0);
+            assert_eq!(samples.mean_us(), 0.0);
+            assert_eq!(samples.max_us, 0);
+        }
+        probe.take_age.record(5);
+        probe.flush_if_due(next_window + Duration::from_secs(1));
+        assert_eq!(probe.take_age.count, 1);
+    }
 
     #[test]
     fn nvenc_device_overrides_are_conservative_and_do_not_change_other_paths() {
