@@ -21,10 +21,10 @@ struct PairingSheet: View {
                         .accessibilityHidden(true)
 
                     VStack(spacing: 8) {
-                        Text("Pair with your PC")
+                        Text("与电脑配对")
                             .font(.app(24, .semibold, relativeTo: .title2))
                             .foregroundStyle(Theme.text)
-                        Text("Enter the 6-digit code shown in EternalMonitor on your PC. You only need to do this once.")
+                        Text("输入电脑端 EternalMonitor 显示的六位配对码。每台电脑只需配对一次。")
                             .font(.app(15, relativeTo: .body))
                             .foregroundStyle(Theme.textMuted)
                             .multilineTextAlignment(.center)
@@ -54,7 +54,7 @@ struct PairingSheet: View {
                             let digits = String(code.filter(\.isNumber).prefix(6))
                             if digits != code { model.code = digits }
                         }
-                        .accessibilityLabel("Pairing code")
+                        .accessibilityLabel("配对码")
                         .accessibilityIdentifier("pairing.code")
 
                     if let error = model.error {
@@ -77,7 +77,7 @@ struct PairingSheet: View {
                                 if model.submitting {
                                     ProgressView().tint(Theme.onAccent)
                                 }
-                                Text(remaining > 0 ? "Try again in \(remaining) s" : "Pair iPad")
+                                Text(remaining > 0 ? "请在 \(remaining) 秒后重试" : "配对 iPad")
                             }
                         }
                         .buttonStyle(PrimaryButtonStyle())
@@ -86,7 +86,7 @@ struct PairingSheet: View {
                         .accessibilityIdentifier("pairing.submit")
                     }
 
-                    Text("Can't see a code? Open EternalMonitor on the PC and look on the Stream page, or connect with a USB cable instead.")
+                    Text("找不到配对码？请查看电脑端 EternalMonitor 的「连接」页面，也可以改用 USB 数据线连接。")
                         .font(.app(13, relativeTo: .footnote))
                         .foregroundStyle(Theme.textFaint)
                         .multilineTextAlignment(.center)
@@ -98,11 +98,11 @@ struct PairingSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Theme.canvas.ignoresSafeArea())
-            .navigationTitle("Pair with PC")
+            .navigationTitle("与电脑配对")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: cancel)
+                    Button("取消", action: cancel)
                         .foregroundStyle(Theme.text)
                         .accessibilityIdentifier("pairing.cancel")
                 }

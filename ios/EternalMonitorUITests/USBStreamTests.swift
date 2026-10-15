@@ -24,7 +24,7 @@ final class USBStreamTests: XCTestCase {
         app.buttons["display.disconnect"].tap()
         XCTAssertTrue(app.textFields["connect.host"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["connect.usb"].exists)
-        XCTAssertTrue(app.staticTexts["connect.usbStatus"].label.contains("disconnected"))
+        XCTAssertTrue(app.staticTexts["connect.usbStatus"].label.contains("已断开"))
         capture("usb-disconnected", app: app)
     }
 
@@ -48,7 +48,7 @@ final class USBStreamTests: XCTestCase {
         cable("START")
         assertTransport("USB", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
-        assertAudio("PC audio playing", app: app)
+        assertAudio("正在播放电脑声音", app: app)
         capture("usb-drawing-audio-playing", app: app)
 
         showDrawingControls(app, showing: app.buttons["display.settings"])
@@ -62,7 +62,7 @@ final class USBStreamTests: XCTestCase {
         waitForExpectations(timeout: 5)
         app.buttons["settings.done"].tap()
         assertTransport("USB", app: app)
-        assertAudio("PC audio muted or unavailable", app: app)
+        assertAudio("电脑声音已静音或不可用", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         XCTAssertFalse(app.textFields["connect.host"].exists)
         capture("usb-drawing-audio-muted", app: app)
@@ -76,7 +76,7 @@ final class USBStreamTests: XCTestCase {
         waitForExpectations(timeout: 5)
         app.buttons["settings.done"].tap()
         assertTransport("USB", app: app)
-        assertAudio("PC audio playing", app: app)
+        assertAudio("正在播放电脑声音", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         capture("usb-drawing-audio-unmuted", app: app)
     }
@@ -87,7 +87,7 @@ final class USBStreamTests: XCTestCase {
         cable("START")
         assertTransport("USB", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
-        assertAudio("PC audio muted or unavailable", app: app)
+        assertAudio("电脑声音已静音或不可用", app: app)
         showDrawingControls(app, showing: app.buttons["display.settings"])
         app.buttons["display.settings"].tap()
         let toggle = app.switches["settings.playPCaudio"]
@@ -98,7 +98,7 @@ final class USBStreamTests: XCTestCase {
         XCTAssertTrue(app.textFields["connect.host"].waitForExistence(timeout: 10))
         cable("START")
         assertTransport("USB", app: app)
-        assertAudio("PC audio muted or unavailable", app: app)
+        assertAudio("电脑声音已静音或不可用", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         capture("usb-drawing-audio-off-reconnected", app: app)
     }

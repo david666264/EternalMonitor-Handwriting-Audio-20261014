@@ -67,14 +67,14 @@ final class PairingTests: XCTestCase {
         XCTAssertTrue(model.submitting)
         XCTAssertNil(model.submit())
         model.reject(.unauthorized)
-        XCTAssertTrue(model.error?.contains("didn’t match") == true)
+        XCTAssertTrue(model.error?.contains("不匹配") == true)
         XCTAssertFalse(model.submitting)
         model.code = "567890"
         XCTAssertEqual(model.submit(), 567890)
         XCTAssertNil(model.error)
         model.timedOut()
         XCTAssertFalse(model.submitting)
-        XCTAssertTrue(model.error?.contains("did not respond") == true)
+        XCTAssertTrue(model.error?.contains("未响应") == true)
     }
 
     @MainActor func testRateLimitedSheetWaitsFullMinute() async {

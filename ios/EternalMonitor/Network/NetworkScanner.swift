@@ -36,7 +36,7 @@ final class NetworkScanner: NSObject, ObservableObject {
         isScanning = true
         hosts = []
         resolvingServices.removeAll()
-        statusMessage = "Scanning network..."
+        statusMessage = "正在搜索电脑…"
 
         browser.searchForServices(ofType: "_eternaldisplay._udp.", inDomain: "local.")
 
@@ -66,7 +66,7 @@ final class NetworkScanner: NSObject, ObservableObject {
                 // auto-retry once after 2s. Bonjour browse occasionally
                 // misses the first multicast burst.
                 didAutoRetry = true
-                statusMessage = "No hosts found yet — retrying..."
+                statusMessage = "暂未找到电脑，正在重试…"
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     if self.hosts.isEmpty && !self.isScanning {
@@ -74,10 +74,10 @@ final class NetworkScanner: NSObject, ObservableObject {
                     }
                 }
             } else {
-                statusMessage = "No hosts found. Make sure the Windows host is running on the same network."
+                statusMessage = "未找到电脑，请确认电脑端已运行，且连接同一网络；USB 连接请接好数据线。"
             }
         } else {
-            statusMessage = "Found \(hosts.count) host\(hosts.count == 1 ? "" : "s")"
+            statusMessage = "找到 \(hosts.count) 台电脑"
         }
     }
 }
@@ -97,7 +97,7 @@ extension NetworkScanner: NetServiceBrowserDelegate, NetServiceDelegate {
             service.resolve(withTimeout: 4)
 
             if !moreComing {
-                statusMessage = "Resolving hosts..."
+                statusMessage = "正在获取电脑地址…"
             }
         }
     }
@@ -114,8 +114,8 @@ extension NetworkScanner: NetServiceBrowserDelegate, NetServiceDelegate {
 
             if !moreComing {
                 statusMessage = hosts.isEmpty
-                    ? "No hosts found. Make sure the Windows host is running on the same network."
-                    : "Found \(hosts.count) host\(hosts.count == 1 ? "" : "s")"
+                    ? "未找到电脑，请确认电脑端已运行，且连接同一网络；USB 连接请接好数据线。"
+                    : "找到 \(hosts.count) 台电脑"
             }
         }
     }
@@ -125,7 +125,7 @@ extension NetworkScanner: NetServiceBrowserDelegate, NetServiceDelegate {
         didNotSearch errorDict: [String: NSNumber]
     ) {
         Task { @MainActor in
-            statusMessage = "Scan failed. Local network permission may be blocked."
+            statusMessage = "搜索失败，请检查是否允许访问本地网络。"
             stopScan()
         }
     }
@@ -145,7 +145,7 @@ extension NetworkScanner: NetServiceBrowserDelegate, NetServiceDelegate {
             // getifaddrs() for every comparison, a syscall storm on the MainActor.
             let subnet = Self.primaryIPv4Subnet()
             hosts.sort { Self.hostQualityCompare($0, $1, ourSubnet: subnet) }
-            statusMessage = "Found \(hosts.count) host\(hosts.count == 1 ? "" : "s")"
+            statusMessage = "找到 \(hosts.count) 台电脑"
         }
     }
 
@@ -208,7 +208,7 @@ extension NetworkScanner: NetServiceBrowserDelegate, NetServiceDelegate {
         Task { @MainActor in
             resolvingServices.removeValue(forKey: Self.serviceKey(sender))
             if hosts.isEmpty {
-                statusMessage = "Resolving hosts..."
+                statusMessage = "正在获取电脑地址…"
             }
         }
     }

@@ -6,6 +6,7 @@ struct KeyboardRelayMachine {
     private var pressed = Set<UInt16>()
     private var hardwareModifiers: [UInt16: UInt16] = [:]
     private var inferredModifiers = Set<UInt16>()
+    var hasHardwareState: Bool { !pressed.isEmpty || !hardwareModifiers.isEmpty }
 
     static func mappedUsage(_ usage: UInt16, commandAsControl: Bool) -> UInt16 {
         if commandAsControl && usage == 0xe3 { return 0xe0 }
@@ -25,6 +26,28 @@ struct KeyboardRelayMachine {
         case 0xe3, 0xe7: return 8
         default: return 0
         }
+    }
+
+    /// Native text editing must receive physical letters and candidate keys.
+    /// Sending their HID codes as well would type Pinyin on the PC and then
+    /// duplicate the committed Chinese text. Only explicit remote shortcuts,
+    /// function keys and navigation outside a local draft bypass UITextInput.
+    static func routesHardwareToRemote(usage: UInt16, modifiers: UInt8,
+                                       hasDraft: Bool, composing: Bool, sticky: Bool) -> Bool {
+        guard isSupported(usage), modifierBit(usage) == 0, !composing else { return false }
+        if sticky { return true }
+        if hasDraft && modifiers & 2 == 0 && modifiers & 12 != 0 { return false }
+        if modifiers & 6 != 0 { return true }
+        if modifiers & 8 != 0 {
+            // iPad's standard local copy/paste/select/undo shortcuts belong
+            // to its native text editor. Ctrl/Alt remain explicit PC chords.
+            if hasDraft && [UInt16(0x04), 0x06, 0x19, 0x1b, 0x1d].contains(usage) { return false }
+            if usage == 0x19 { return false } // Command-V pastes locally even into an empty draft.
+            return true
+        }
+        if (0x3a...0x48).contains(usage) { return true }
+        return !hasDraft && [UInt16(0x28), 0x29, 0x2a, 0x2b, 0x49, 0x4a, 0x4b,
+                             0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52].contains(usage)
     }
 
     private func event(_ usage: UInt16, down: Bool) -> WireInputEvent {

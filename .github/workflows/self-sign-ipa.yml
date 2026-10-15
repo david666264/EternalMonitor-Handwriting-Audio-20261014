@@ -31,12 +31,12 @@ jobs:
         run: |
           python3 scripts/package_unsigned_ipa.py \
             --archive build/testflight/EternalMonitor.xcarchive \
-            --output build/self-sign/EternalMonitor-v0.3.0-handwriting-audio-unsigned.ipa
+            --output build/self-sign/EternalMonitor-v0.3.0-chinese-input-unsigned.ipa
           cp LICENSE build/self-sign/LICENSE
       - name: Retain the IPA
         uses: actions/upload-artifact@v4
         with:
-          name: EternalMonitor-handwriting-audio-unsigned-IPA
+          name: EternalMonitor-chinese-input-unsigned-IPA
           path: build/self-sign/
           if-no-files-found: error
           retention-days: 14
@@ -49,6 +49,48 @@ jobs:
             build/testflight/archive.log
             build/testflight/result.json
           if-no-files-found: ignore
+          retention-days: 7
+
+  chinese-input-tests:
+    name: Chinese UI and native keyboard
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install simulator build dependencies
+        run: |
+          brew install xcodegen ffmpeg@7 pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg@7)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - name: Create the test iPad
+        id: sim
+        run: |
+          UDID=$(xcrun simctl create chinese-input \
+            com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M4-8GB \
+            com.apple.CoreSimulator.SimRuntime.iOS-18-6)
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Test Chinese UI, marked text, draft editing and remote input
+        env:
+          EM_SIM_UDID: ${{ steps.sim.outputs.udid }}
+          EM_UI_EVIDENCE_DIR: ${{ github.workspace }}/build/e2e/chinese-input
+          EM_TEST_STAMP: chinese-input
+        run: |
+          bash scripts/test_ios.sh \
+            -only-testing:EternalMonitorTests \
+            -only-testing:EternalMonitorUITests/ConnectScreenTests \
+            -only-testing:EternalMonitorUITests/KeyboardRelayTests \
+            -only-testing:EternalMonitorUITests/ChineseInputTests
+      - name: Retain keyboard and UI test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chinese-input-test-evidence
+          path: |
+            build/e2e/chinese-input/
+            build/ios-ui-host-chinese-input.log
+          if-no-files-found: error
           retention-days: 7
 
   drawing-audio-tests:

@@ -45,29 +45,31 @@ private struct ConnectionDebugState {
 
     var timeoutSummary: String {
         if listenerReadyPort == nil {
-            return "Receiver never became ready."
+            return "接收器未能就绪。"
         }
         if helloAttempts == 0 {
-            return "Listener came up, but HELLO registration never sent."
+            return "监听器已就绪，但尚未发送连接请求。"
         }
         if datagramsReceived == 0 {
-            return "HELLO sent \(helloAttempts)x to \(host):\(port), but no datagrams came back."
+            return "已向 \(host):\(port) 发送 \(helloAttempts) 次连接请求，但未收到数据。"
         }
         if assembledFrames == 0 {
-            return "Received \(datagramsReceived) datagrams (\(datagramBytesReceived) bytes), but no complete frame was reassembled."
+            return "已收到 \(datagramsReceived) 个数据包（\(datagramBytesReceived) 字节），但尚未组成完整画面。"
         }
         if decodePackets == 0 {
-            return "Reassembled \(assembledFrames) frame payloads, but none could be parsed as FramePacket."
+            return "已重组 \(assembledFrames) 帧，但画面数据格式无法解析。"
         }
         if decodedFrames == 0 {
-            return "Parsed \(decodePackets) packets and assembled \(assembledFrames) payloads, but VideoToolbox produced no frames."
+            return "已解析 \(decodePackets) 个画面包并重组 \(assembledFrames) 帧，但硬件解码器未输出画面。"
         }
-        return "Received \(decodedFrames) decoded frames, but the connection did not transition cleanly."
+        return "已解码 \(decodedFrames) 帧，但连接状态尚未正常切换。"
     }
 }
 
 @MainActor
 final class ConnectionManager: ObservableObject {
+    /// Local input survives a view rebuild during automatic reconnection.
+    let keyboardDraft = KeyboardDraftStore()
     @Published var state: ConnectionState = .disconnected
     @Published var fps: Double = 0
     @Published var transportMode: String = "WiFi"
@@ -228,7 +230,7 @@ final class ConnectionManager: ObservableObject {
 
     func forgetPairedHosts() {
         do { try pairingStore.forgetAll() }
-        catch { connectionError = "Could not remove saved pairings from this iPad." }
+        catch { connectionError = "无法移除此 iPad 保存的配对记录。" }
     }
 
     func connect(target: ConnectionTarget) {
@@ -467,11 +469,11 @@ final class ConnectionManager: ObservableObject {
                 }
                 switch status {
                 case .busy:
-                    self.connectionError = "Your PC is already streaming to another device."
+                    self.connectionError = "电脑正在向另一台设备传输。"
                 case .versionUnsupported:
-                    self.connectionError = "This app and EternalMonitor on your PC are different versions. Update both, then try again."
+                    self.connectionError = "iPad 与电脑端的协议版本不兼容，请更新后重试。"
                 default:
-                    self.connectionError = "Your PC turned down the connection."
+                    self.connectionError = "电脑拒绝了连接。"
                 }
                 self.record(.error, "ctrl", self.connectionError ?? "rejected")
                 self.disconnect()
@@ -486,7 +488,7 @@ final class ConnectionManager: ObservableObject {
                 }
                 if let receiver, receiver.legacyLookingDatagrams > 0 {
                     self.connectionError =
-                        "The host is running v0.1.x — update EternalMonitor on the PC."
+                        "电脑端仍为 v0.1.x，请更新电脑端 EternalMonitor。"
                     self.record(.error, "ctrl", "Legacy v1 host detected")
                     self.disconnect()
                 } else {
@@ -497,7 +499,7 @@ final class ConnectionManager: ObservableObject {
         channel.onBye = { [weak self] reason in
             Task { @MainActor in
                 guard let self, self.currentAttempt.withLock({ $0 == connectionID }) else { return }
-                self.connectionError = "Your PC ended the session."
+                self.connectionError = "电脑已结束连接。"
                 self.record(.info, "ctrl", "Host BYE (\(reason))")
                 self.disconnect()
             }
@@ -588,7 +590,7 @@ final class ConnectionManager: ObservableObject {
         self.mediaLink = receiver
 
         guard receiver.start(host: normalizedHost) else {
-            connectionError = "Couldn't start streaming on this iPad. Try again."
+            connectionError = "无法在此 iPad 上启动画面传输，请重试。"
             record(.error, "connection", "Receiver failed to start")
             disconnect()
             return
@@ -712,7 +714,7 @@ final class ConnectionManager: ObservableObject {
         record(.warning, "ctrl", "Connection lost (\(reason))")
         disconnect()
         guard auto, let target else {
-            connectionError = "Connection lost — \(reason)."
+            connectionError = "连接中断：\(reason)。"
             return
         }
         startReconnectCycle(to: target)
@@ -724,7 +726,7 @@ final class ConnectionManager: ObservableObject {
             for attempt in 1...6 {
                 guard let self, !Task.isCancelled else { return }
                 self.reconnectAttempt = attempt
-                self.connectionError = "Connection lost — reconnecting (attempt \(attempt)/6)…"
+                self.connectionError = "连接中断，正在重试（第 \(attempt)/6 次）…"
                 let backoff = min(1 << (attempt - 1), 15)
                 try? await Task.sleep(for: .seconds(Double(backoff)))
                 guard !Task.isCancelled, self.state == .disconnected else { return }
@@ -740,7 +742,7 @@ final class ConnectionManager: ObservableObject {
             }
             guard let self, !Task.isCancelled else { return }
             self.reconnectAttempt = 0
-            self.connectionError = "Couldn't reach your PC after 6 tries. Check that EternalMonitor is running on it."
+            self.connectionError = "重试 6 次后仍无法连接，请确认电脑端 EternalMonitor 正在运行。"
         }
     }
 
@@ -753,7 +755,7 @@ final class ConnectionManager: ObservableObject {
             if !Task.isCancelled && self.state == .connecting {
                 let summary = self.debugState.timeoutSummary
                 self.record(.error, "timeout", summary)
-                self.connectionError = "No picture arrived from your PC. \(summary)"
+                self.connectionError = "未收到电脑画面。\(summary)"
                 self.disconnect()
             }
         }

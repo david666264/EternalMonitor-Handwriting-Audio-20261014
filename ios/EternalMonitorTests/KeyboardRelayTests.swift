@@ -118,4 +118,23 @@ final class KeyboardRelayTests: XCTestCase {
         XCTAssertEqual(pointer.hover(at: point, timeUs: 16_667).first?.kind, 6)
         XCTAssertEqual(pointer.scroll(at: point, delta: CGSize(width: 0, height: -10)).first?.scrollDy, -10)
     }
+
+    func testNativeHardwareRoutingPreservesCompositionAndLocalEditing() {
+        let route = KeyboardRelayMachine.routesHardwareToRemote
+        for usage in [UInt16(0x11), 0x0c, 0x2c, 0x28, 0x2a, 0x50] {
+            XCTAssertFalse(route(usage, 0, true, true, false), "IME must own candidate key \(usage)")
+        }
+        XCTAssertFalse(route(0x11, 0, false, false, false), "Printable hardware letters go through UITextInput")
+        XCTAssertFalse(route(0x28, 0, true, false, false), "Return edits a multiline draft")
+        XCTAssertFalse(route(0x50, 0, true, false, false), "Arrows edit the local draft")
+        XCTAssertTrue(route(0x50, 0, false, false, false), "An empty draft permits remote arrows")
+        XCTAssertTrue(route(0x06, 2, true, false, false), "Ctrl-C remains a PC shortcut")
+        XCTAssertTrue(route(0x06, 0, false, false, true), "Sticky Ctrl still supports a hardware shortcut")
+        XCTAssertFalse(route(0x06, 8, true, false, false), "Command-C copies the local draft")
+        XCTAssertFalse(route(0x19, 8, false, false, false), "Command-V pastes into an empty local draft")
+        XCTAssertFalse(route(0x50, 8, true, false, false), "Command-Left goes to the start of the local line")
+        XCTAssertFalse(route(0x4f, 4, true, false, false), "Option-Right navigates the local document")
+        XCTAssertFalse(route(0xe0, 2, false, false, false), "UIKit sees native modifier downs")
+        XCTAssertTrue(route(0x3a, 0, true, false, false), "F1 remains a remote key")
+    }
 }

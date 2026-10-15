@@ -5,7 +5,11 @@
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
     <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
+    <string>zh-Hans</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh-Hans</string>
+    </array>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -50,12 +54,12 @@
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>EternalMonitor receives video frames from your Windows PC over the local network.</string>
+    <string>用于在本地网络中发现电脑，并接收电脑画面和声音。</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_eternaldisplay._udp</string>
     </array>
     <key>NSCameraUsageDescription</key>
-    <string>Scan the QR code shown in EternalMonitor on your PC to connect without typing its address.</string>
+    <string>用于扫描电脑端的连接二维码，无需手动输入地址。</string>
 </dict>
 </plist>

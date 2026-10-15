@@ -23,87 +23,87 @@ struct SettingsView: View {
                         Text("60 fps").tag(60)
                         Text("120 fps").tag(120)
                     } label: {
-                        rowLabel("Frame rate", "speedometer")
+                        rowLabel("帧率", "speedometer")
                     }
                     .accessibilityIdentifier("settings.targetFPS")
                     .accessibilityValue("\(settings.targetFPS) fps")
 
                     Toggle(isOn: $settings.playPCaudio) {
-                        rowLabel("Play PC audio", "speaker.wave.2")
+                        rowLabel("播放电脑声音", "speaker.wave.2")
                     }
                     .accessibilityIdentifier("settings.playPCaudio")
 
                     Toggle(isOn: $settings.showHUD) {
-                        rowLabel("Show stream stats", "gauge.with.dots.needle.33percent")
+                        rowLabel("显示传输统计", "gauge.with.dots.needle.33percent")
                     }
 
                     Toggle(isOn: $settings.keepScreenAwake) {
-                        rowLabel("Keep screen awake", "sun.max")
+                        rowLabel("保持屏幕常亮", "sun.max")
                     }
                 } header: {
-                    sectionHeader("Streaming")
+                    sectionHeader("画面与声音")
                 } footer: {
-                    footnote("Frame rate applies from the next connection. Tap the picture to show or hide the controls.")
+                    footnote("帧率在下次连接时生效。轻点画面可显示或隐藏控制栏。")
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
                 Section {
                     Toggle(isOn: $settings.allowUSB) {
-                        rowLabel("Allow USB connections", "cable.connector")
+                        rowLabel("允许 USB 连接", "cable.connector")
                     }
                     .accessibilityIdentifier("settings.allowUSB")
 
                     Toggle(isOn: $settings.autoReconnect) {
-                        rowLabel("Reconnect automatically", "arrow.triangle.2.circlepath")
+                        rowLabel("自动重新连接", "arrow.triangle.2.circlepath")
                     }
 
                     Toggle(isOn: $settings.autoResumeOnForeground) {
-                        rowLabel("Resume after switching apps", "arrow.uturn.forward")
+                        rowLabel("切回应用后恢复连接", "arrow.uturn.forward")
                     }
                 } header: {
-                    sectionHeader("Connection")
+                    sectionHeader("连接")
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
                 Section {
                     Toggle(isOn: $settings.controlPC) {
-                        rowLabel("Control PC", "hand.point.up.left")
+                        rowLabel("控制电脑", "hand.point.up.left")
                     }
                     Picker(selection: $settings.commandAsControl) {
                         Text("Ctrl").tag(true)
                         Text("Win").tag(false)
                     } label: {
-                        rowLabel("⌘ key acts as", "command")
+                        rowLabel("⌘ 键映射为", "command")
                     }
                     .accessibilityIdentifier("settings.commandMapping")
                 } header: {
-                    sectionHeader("Control")
+                    sectionHeader("触控与键盘")
                 } footer: {
                     footnote(
-                        "Tap to click, drag to move, two fingers to scroll, hold to right-click. "
-                            + "Keyboard, trackpad and Apple Pencil work too. Applies from the next connection. "
-                            + "While Control PC is on, tap with three fingers to show the controls."
+                        "轻点为单击，拖动可移动，双指可滚动，长按为右键。"
+                            + "也支持键盘、触控板和 Apple Pencil。此设置在下次连接时生效。"
+                            + "开启「控制电脑」后，三指轻点可显示控制栏。先点电脑画面中的文本框，再打开「键盘」；用键盘上的地球键切换中文拼音或手写。若没有中文，请先在 iPad「设置 > 通用 > 键盘」中添加。"
                     )
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
                 Section {
                     Toggle(isOn: $settings.drawingMode) {
-                        rowLabel("Drawing mode", "pencil.tip")
+                        rowLabel("画笔模式", "pencil.tip")
                     }
                     .accessibilityIdentifier("settings.drawingMode")
                     .onChange(of: settings.drawingMode) { _, enabled in
                         if enabled { settings.allowUSB = true }
                     }
                     if connectionManager.state == .connected {
-                        infoRow("Pencil", connectionManager.sessionHasPen ? "Windows Ink ready" : "Unavailable on this host", "pencil")
-                        infoRow("Drawing mode", connectionManager.sessionDrawingMode ? "Active" : "Off", "hand.draw")
+                        infoRow("画笔", connectionManager.sessionHasPen ? "Windows Ink 已就绪" : "此主机不支持", "pencil")
+                        infoRow("画笔模式", connectionManager.sessionDrawingMode ? "已开启" : "已关闭", "hand.draw")
                     }
                 } header: {
                     sectionHeader("Apple Pencil")
                 } footer: {
-                    footnote("Drawing mode ignores fingers on the canvas. Play PC audio also works while drawing and can be changed during a session. Over USB, drawing mode requests the iPad's highest frame rate, up to the PC's limit. Drawing mode applies from the next connection. "
-                        + "In Clip Studio Paint, choose Preferences > Tablet > Tablet PC. Pressure requires a pressure-sensitive Pencil; Apple Pencil USB-C does not support pressure.")
+                    footnote("画笔模式会忽略手指在画布上的触碰。手写时仍可播放电脑声音，也可在连接中切换声音。通过 USB 连接时，画笔模式会请求 iPad 的最高帧率，但不超过电脑端设置的上限。画笔模式在下次连接时生效。"
+                        + "在 Clip Studio Paint 中请选择「偏好设置 > 数位板 > Tablet PC」。压感需要支持压感的 Apple Pencil；USB-C 版 Apple Pencil 不支持压感。")
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
@@ -111,34 +111,34 @@ struct SettingsView: View {
                 Section {
                     if let host = connectionManager.hostInfo,
                        let config = connectionManager.hostStreamConfig {
-                        infoRow("PC", host.hostName, "desktopcomputer")
+                        infoRow("主机", host.hostName, "desktopcomputer")
                         infoRow(
-                            "Resolution",
-                            "\(config.width) × \(config.height) at \(config.fps) fps",
+                            "分辨率",
+                            "\(config.width) × \(config.height) · \(config.fps) fps",
                             "rectangle.on.rectangle"
                         )
                         infoRow(
-                            "Codec",
+                            "编码格式",
                             config.codec == StreamConfig.codecHEVC ? "HEVC (H.265)" : "H.264",
                             "cpu"
                         )
                         infoRow(
-                            "Bitrate",
+                            "码率",
                             String(format: "%.1f Mbps", Double(config.bitrateBps) / 1_000_000.0),
                             "chart.bar"
                         )
-                        infoRow("Audio", audioDescription, "speaker.wave.2")
+                        infoRow("电脑声音", audioDescription, "speaker.wave.2")
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Audio")
+                            .accessibilityLabel("电脑声音")
                             .accessibilityValue(audioDescription)
                             .accessibilityIdentifier("settings.hostAudio")
                     } else {
-                        infoRow("PC", "Not connected", "desktopcomputer")
+                        infoRow("主机", "未连接", "desktopcomputer")
                     }
                 } header: {
-                    sectionHeader("Connected PC")
+                    sectionHeader("已连接的主机")
                 } footer: {
-                    footnote("Resolution, codec and bitrate are set in EternalMonitor on your PC.")
+                    footnote("分辨率、编码格式和码率请在电脑端 EternalMonitor 中设置。")
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
@@ -146,15 +146,15 @@ struct SettingsView: View {
                     Button(role: .destructive) {
                         connectionManager.forgetPairedHosts()
                     } label: {
-                        Text("Forget paired PCs")
+                        Text("忘记已配对的电脑")
                             .font(.app(16, .medium, relativeTo: .body))
                             .foregroundStyle(Theme.danger)
                     }
                     .accessibilityIdentifier("settings.forgetPairings")
                 } header: {
-                    sectionHeader("Pairing")
+                    sectionHeader("配对")
                 } footer: {
-                    footnote("Each PC asks for its six-digit code again on the next Wi-Fi connection.")
+                    footnote("下次通过 Wi-Fi 连接时，需要重新输入对应电脑的六位配对码。")
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
@@ -165,29 +165,29 @@ struct SettingsView: View {
                             Text("EternalMonitor")
                                 .font(.app(16, .semibold, relativeTo: .headline))
                                 .foregroundStyle(Theme.text)
-                            Text("Version \(appVersion)")
+                            Text("版本 \(appVersion)")
                                 .font(.app(13, relativeTo: .footnote))
                                 .foregroundStyle(Theme.textMuted)
                         }
                     }
                     .padding(.vertical, 4)
-                    creditLink("Developer", "github.com/whoisaldo", symbol: "person", url: "https://github.com/whoisaldo")
-                    creditLink("Source code", "EternalMonitor", symbol: "chevron.left.forwardslash.chevron.right", url: "https://github.com/whoisaldo/EternalMonitor")
-                    creditLink("Contact", "aliyounes@eternalreverse.com", symbol: "envelope", url: "mailto:aliyounes@eternalreverse.com")
+                    creditLink("开发者", "github.com/whoisaldo", symbol: "person", url: "https://github.com/whoisaldo")
+                    creditLink("源代码", "EternalMonitor", symbol: "chevron.left.forwardslash.chevron.right", url: "https://github.com/whoisaldo/EternalMonitor")
+                    creditLink("联系开发者", "aliyounes@eternalreverse.com", symbol: "envelope", url: "mailto:aliyounes@eternalreverse.com")
                 } header: {
-                    sectionHeader("About")
+                    sectionHeader("关于")
                 } footer: {
-                    footnote("Built by Ali Younes (@whoisaldo). Set in Geist.")
+                    footnote("由 Ali Younes（@whoisaldo）开发，使用 Geist 字体。")
                 }
                 .listRowBackground(Theme.surfaceRaised)
             }
             .scrollContentBackground(.hidden)
             .background(Theme.canvas.ignoresSafeArea())
-            .navigationTitle("Settings")
+            .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("完成") { dismiss() }
                         .font(.app(16, .semibold, relativeTo: .body))
                         .foregroundStyle(Theme.accent)
                         .accessibilityIdentifier("settings.done")
@@ -218,10 +218,10 @@ struct SettingsView: View {
     }
 
     private var audioDescription: String {
-        if !settings.playPCaudio { return "Muted" }
+        if !settings.playPCaudio { return "已静音" }
         if let error = connectionManager.audioStats.error { return error }
-        guard connectionManager.audioStats.playing else { return "Unavailable" }
-        return "Opus 128 kbps, buffer \(connectionManager.audioStats.targetMs) ms"
+        guard connectionManager.audioStats.playing else { return "暂不可用" }
+        return "Opus 128 kbps，缓冲 \(connectionManager.audioStats.targetMs) ms"
     }
 
     private func footnote(_ text: String) -> some View {

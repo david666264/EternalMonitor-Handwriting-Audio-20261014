@@ -173,7 +173,7 @@ final class AudioPlayer {
         failed = true
         closeOutput(deactivate: true)
         let message = "PC audio stopped: \(error.localizedDescription)"
-        measurements.withLock { $0.playing = false; $0.error = "Audio unavailable. Reconnect to retry." }
+        measurements.withLock { $0.playing = false; $0.error = "声音不可用，请重新连接后重试。" }
         onError?(message)
     }
 

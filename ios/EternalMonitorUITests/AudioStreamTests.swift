@@ -10,14 +10,14 @@ final class AudioStreamTests: XCTestCase {
         app.launch()
         let hud = app.buttons["display.hud"]
         XCTAssertTrue(hud.waitForExistence(timeout: 10))
-        waitForHUD(app, containing: "PC audio playing")
+        waitForHUD(app, containing: "正在播放电脑声音")
         openSettings(app)
         let toggle = app.switches["settings.playPCaudio"]
         XCTAssertTrue(toggle.exists)
         XCTAssertEqual(toggle.value as? String, "1")
         setSwitch(toggle, to: "0")
         app.buttons["settings.done"].tap()
-        waitForHUD(app, containing: "PC audio muted or unavailable")
+        waitForHUD(app, containing: "电脑声音已静音或不可用")
         let disconnect = app.buttons["display.disconnect"]
         revealControls(app, showing: disconnect)
         XCTAssertTrue(appears(disconnect, within: 5))
@@ -28,12 +28,12 @@ final class AudioStreamTests: XCTestCase {
         app.swipeUp()
         let audio = app.descendants(matching: .any)["settings.hostAudio"].firstMatch
         XCTAssertTrue(audio.waitForExistence(timeout: 5))
-        let activeAudio = NSPredicate(format: "value CONTAINS %@", "Opus 128 kbps, buffer")
+        let activeAudio = NSPredicate(format: "value CONTAINS %@", "Opus 128 kbps，缓冲")
         expectation(for: activeAudio, evaluatedWith: audio)
         waitForExpectations(timeout: 5)
         capture("audio-host-stream", app: app)
         app.buttons["settings.done"].tap()
-        waitForHUD(app, containing: "PC audio playing")
+        waitForHUD(app, containing: "正在播放电脑声音")
         capture("audio-playing-hud", app: app)
         tapControl("display.disconnect", in: app, until: app.textFields["connect.host"])
         app.terminate()
@@ -43,15 +43,15 @@ final class AudioStreamTests: XCTestCase {
         continueAfterFailure = false
         let app = launchDrawingApp(audioEnabled: true)
         XCTAssertTrue(app.buttons["display.drawingControls"].waitForExistence(timeout: 10))
-        waitForHUD(app, containing: "PC audio playing")
+        waitForHUD(app, containing: "正在播放电脑声音")
         openSettings(app)
-        waitForAudioStatus(app, containing: "Opus 128 kbps, buffer")
+        waitForAudioStatus(app, containing: "Opus 128 kbps，缓冲")
         let toggle = app.switches["settings.playPCaudio"]
         scrollToAudioToggle(app)
         setSwitch(toggle, to: "0")
-        waitForAudioStatus(app, containing: "Muted")
+        waitForAudioStatus(app, containing: "已静音")
         app.buttons["settings.done"].tap()
-        waitForHUD(app, containing: "PC audio muted or unavailable")
+        waitForHUD(app, containing: "电脑声音已静音或不可用")
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         XCTAssertFalse(app.textFields["connect.host"].exists)
         capture("drawing-audio-muted-hud", app: app)
@@ -59,9 +59,9 @@ final class AudioStreamTests: XCTestCase {
         openSettings(app)
         scrollToAudioToggle(app)
         setSwitch(toggle, to: "1")
-        waitForAudioStatus(app, containing: "Opus 128 kbps, buffer")
+        waitForAudioStatus(app, containing: "Opus 128 kbps，缓冲")
         app.buttons["settings.done"].tap()
-        waitForHUD(app, containing: "PC audio playing")
+        waitForHUD(app, containing: "正在播放电脑声音")
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         capture("drawing-audio-playing-hud", app: app)
         tapControl("display.disconnect", in: app, until: app.textFields["connect.host"])
@@ -72,22 +72,22 @@ final class AudioStreamTests: XCTestCase {
         continueAfterFailure = false
         let app = launchDrawingApp(audioEnabled: false)
         XCTAssertTrue(app.buttons["display.drawingControls"].waitForExistence(timeout: 10))
-        waitForHUD(app, containing: "PC audio muted or unavailable")
+        waitForHUD(app, containing: "电脑声音已静音或不可用")
         openSettings(app)
         let toggle = app.switches["settings.playPCaudio"]
         XCTAssertEqual(toggle.value as? String, "0", "Drawing must respect the disabled audio preference")
-        waitForAudioStatus(app, containing: "Muted")
+        waitForAudioStatus(app, containing: "已静音")
         capture("drawing-audio-off-settings", app: app)
         scrollToAudioToggle(app)
         // An audio-free HELLO2 needs a reconnect when sound is enabled. The
         // settings sheet disappears with its old DisplayView, so verify the
         // new stream rather than polling the removed switch.
         pressSwitch(toggle)
-        waitForHUD(app, containing: "PC audio playing")
+        waitForHUD(app, containing: "正在播放电脑声音")
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         openSettings(app)
         XCTAssertEqual(app.switches["settings.playPCaudio"].value as? String, "1")
-        waitForAudioStatus(app, containing: "Opus 128 kbps, buffer")
+        waitForAudioStatus(app, containing: "Opus 128 kbps，缓冲")
         capture("drawing-audio-enabled-settings", app: app)
         app.buttons["settings.done"].tap()
         tapControl("display.disconnect", in: app, until: app.textFields["connect.host"])
@@ -153,7 +153,7 @@ final class AudioStreamTests: XCTestCase {
     }
 
     private func openSettings(_ app: XCUIApplication) {
-        tapControl("display.settings", in: app, until: app.navigationBars["Settings"])
+        tapControl("display.settings", in: app, until: app.navigationBars["设置"])
     }
 
     private func waitForHUD(_ app: XCUIApplication, containing text: String) {

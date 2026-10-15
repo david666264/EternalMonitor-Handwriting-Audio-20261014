@@ -26,7 +26,7 @@ final class StreamDiagnosticsTests: XCTestCase {
         }
         expectation(for: hasRepairs, evaluatedWith: repaired)
         waitForExpectations(timeout: 10)
-        XCTAssertTrue((jitter.value as? String ?? "").contains("milliseconds"))
+        XCTAssertTrue((jitter.value as? String ?? "").contains("毫秒"))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "stream-quality-repairs"
         screenshot.lifetime = .keepAlways

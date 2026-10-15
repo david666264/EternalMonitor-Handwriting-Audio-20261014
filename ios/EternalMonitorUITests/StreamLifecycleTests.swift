@@ -13,7 +13,7 @@ final class StreamLifecycleTests: XCTestCase {
         app.launchEnvironment["EM_AUTOCONNECT"] = ProcessInfo.processInfo.environment["EM_INPUT_HOST"] ?? "127.0.0.1:19875"
         app.launchEnvironment["EM_E2E_LOG"] = "1"
         app.launch()
-        waitForSignal("On air", app: app, timeout: 15)
+        waitForSignal("正在传输", app: app, timeout: 15)
         return app
     }
 
@@ -28,10 +28,10 @@ final class StreamLifecycleTests: XCTestCase {
         waitForExpectations(timeout: 5)
         let started = ProcessInfo.processInfo.systemUptime
         try Data().write(to: directory.appendingPathComponent("stop.request"))
-        waitForSignal("Signal lost, reconnecting", app: app, timeout: 7)
+        waitForSignal("信号中断，正在重连", app: app, timeout: 7)
         capture("signal-lost", app: app)
         try Data().write(to: directory.appendingPathComponent("start.request"))
-        waitForSignal("On air", app: app, timeout: 15)
+        waitForSignal("正在传输", app: app, timeout: 15)
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         XCTAssertLessThan(elapsed, 15, "Host restart must recover within fifteen seconds")
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("restarted.json").path))
@@ -52,7 +52,7 @@ final class StreamLifecycleTests: XCTestCase {
         print("E2E_LIFECYCLE_BACKGROUND bye=AppBackground")
         let started = ProcessInfo.processInfo.systemUptime
         app.activate()
-        waitForSignal("On air", app: app, timeout: 15)
+        waitForSignal("正在传输", app: app, timeout: 15)
         print("E2E_LIFECYCLE_FOREGROUND elapsed=\(ProcessInfo.processInfo.systemUptime - started)")
         capture("background-resumed", app: app)
         disconnect(app)

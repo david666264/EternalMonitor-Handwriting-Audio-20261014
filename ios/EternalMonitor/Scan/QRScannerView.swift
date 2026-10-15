@@ -62,7 +62,7 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         ])
 
         let hint = UILabel()
-        hint.text = "Point at the QR code in EternalMonitor on your PC"
+        hint.text = "对准电脑端 EternalMonitor 显示的二维码"
         hint.font = UIFont(name: "Geist-Medium", size: 17) ?? .systemFont(ofSize: 17, weight: .medium)
         hint.textColor = .white
         hint.textAlignment = .center
@@ -76,7 +76,7 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
         ])
 
         var cancel = UIButton.Configuration.filled()
-        cancel.title = "Cancel"
+        cancel.title = "取消"
         cancel.baseBackgroundColor = UIColor.white.withAlphaComponent(0.16)
         cancel.baseForegroundColor = .white
         cancel.cornerStyle = .capsule
@@ -144,11 +144,11 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
 
     private func showCameraDeniedAlert() {
         let alert = UIAlertController(
-            title: "Camera unavailable",
-            message: "Enable camera access in Settings to scan QR codes.",
+            title: "相机不可用",
+            message: "请在 iPad 的「设置」中允许使用相机，以扫描二维码。",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in
             self?.handleCancel()
         })
         present(alert, animated: true)

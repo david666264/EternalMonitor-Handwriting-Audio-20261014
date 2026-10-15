@@ -54,7 +54,7 @@ struct DisplayView: View {
                                 .background(glass(Circle()))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Show or hide drawing controls")
+                        .accessibilityLabel("显示或隐藏手写控制")
                         .accessibilityIdentifier("display.drawingControls")
                     }
                     if showHUD && settings.showHUD {
@@ -66,7 +66,7 @@ struct DisplayView: View {
                 .padding(.trailing, 16)
 
                 if connectionManager.sessionDrawingMode && !connectionManager.sessionHasPen {
-                    Text("Native Pencil input is unavailable. Check that your Windows host supports Windows Ink.")
+                    Text("原生手写笔输入不可用，请检查电脑端是否支持 Windows Ink。")
                         .font(.app(14, relativeTo: .footnote))
                         .foregroundStyle(Theme.text)
                         .padding(12)
@@ -77,7 +77,7 @@ struct DisplayView: View {
 
                 Spacer()
 
-                if showHUD {
+                if showHUD && !showKeyboard {
                     bottomBar
                         .padding(.horizontal, 16)
                         .padding(.bottom, 12)
@@ -159,16 +159,16 @@ struct DisplayView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(hudAccessibilitySummary)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Show connection quality details")
+        .accessibilityHint("查看连接质量详情")
         .accessibilityIdentifier("display.hud")
     }
 
     private var hudAccessibilitySummary: String {
-        let latency = connectionManager.stats.e2eMs.map { String(format: "%.0f milliseconds", $0) }
-            ?? "unknown latency"
-        return "Stream statistics: \(Int(connectionManager.fps)) frames per second, "
-            + "\(latency), \(connectionManager.transportMode), \(connectionManager.stats.bars) of 4 signal bars, "
-            + (audioPlaying ? "PC audio playing" : "PC audio muted or unavailable")
+        let latency = connectionManager.stats.e2eMs.map { String(format: "%.0f 毫秒", $0) }
+            ?? "延迟未知"
+        return "传输状态：每秒 \(Int(connectionManager.fps)) 帧，"
+            + "\(latency)，\(connectionManager.transportMode)，信号 \(connectionManager.stats.bars) 格（共 4 格），"
+            + (audioPlaying ? "正在播放电脑声音" : "电脑声音已静音或不可用")
     }
 
     private var qualityBars: some View {
@@ -188,31 +188,31 @@ struct DisplayView: View {
         let q = connectionManager.stats
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Connection quality")
+                Text("连接质量")
                     .font(.app(17, .semibold, relativeTo: .headline))
                     .foregroundStyle(Theme.text)
-                Text("\(transportName) · measured on this iPad")
+                Text("\(transportName) · 在此 iPad 测量")
                     .font(.app(13, relativeTo: .footnote))
                     .foregroundStyle(Theme.textMuted)
             }
             Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 14) {
                 GridRow {
-                    metric("Loss", String(format: "%.1f", q.lossPercent), "%", color: q.lossPercent < 3 ? Theme.text : Theme.warning)
-                    metric("Round trip", q.rttMs.map { String(format: "%.0f", $0) } ?? "–", "ms")
-                    metric("Dropped", "\(q.framesDropped)", "")
+                    metric("丢包率", String(format: "%.1f", q.lossPercent), "%", color: q.lossPercent < 3 ? Theme.text : Theme.warning)
+                    metric("往返耗时", q.rttMs.map { String(format: "%.0f", $0) } ?? "–", "ms")
+                    metric("丢弃帧", "\(q.framesDropped)", "")
                 }
                 GridRow {
-                    metric("Repaired", "\(q.fragsRepaired)", "")
+                    metric("已恢复分片", "\(q.fragsRepaired)", "")
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Repaired fragments")
+                        .accessibilityLabel("已恢复分片")
                         .accessibilityValue("\(q.fragsRepaired)")
                         .accessibilityIdentifier("quality.repaired")
-                    metric("Jitter", String(format: "%.1f", q.jitterMs), "ms")
+                    metric("抖动", String(format: "%.1f", q.jitterMs), "ms")
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Jitter")
-                        .accessibilityValue(String(format: "%.1f milliseconds", q.jitterMs))
+                        .accessibilityLabel("抖动")
+                        .accessibilityValue(String(format: "%.1f 毫秒", q.jitterMs))
                         .accessibilityIdentifier("quality.jitter")
-                    metric("Latency", q.e2eMs.map { String(format: "%.0f", $0) } ?? "–", "ms")
+                    metric("端到端延迟", q.e2eMs.map { String(format: "%.0f", $0) } ?? "–", "ms")
                 }
             }
         }
@@ -262,7 +262,7 @@ struct DisplayView: View {
         HStack(spacing: 8) {
             HStack(spacing: 10) {
                 StatusDot(color: connectionManager.signalLost ? Theme.warning : Theme.accent, size: 8)
-                Text(connectionManager.signalLost ? "Reconnecting" : "Live")
+                Text(connectionManager.signalLost ? "正在重连" : "已连接")
                     .font(.app(14, .semibold, relativeTo: .subheadline))
                     .foregroundStyle(Theme.text)
                 if sizeClass != .compact {
@@ -275,7 +275,7 @@ struct DisplayView: View {
             .padding(.trailing, 6)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
-                connectionManager.signalLost ? "Signal lost, reconnecting" : "On air"
+                connectionManager.signalLost ? "信号中断，正在重连" : "正在传输"
             )
             .accessibilityIdentifier("display.signal")
 
@@ -283,12 +283,14 @@ struct DisplayView: View {
 
             if connectionManager.sessionHasKeyboard {
                 Button { showKeyboard.toggle() } label: {
-                    toolbarLabel(showKeyboard ? "Hide keyboard" : "Keyboard", "keyboard")
+                    toolbarLabel(showKeyboard ? "收起键盘" : "键盘", "keyboard")
                 }
                 .buttonStyle(PillButtonStyle(
                     foreground: showKeyboard ? Theme.onAccent : Theme.text,
                     fill: showKeyboard ? Theme.accent : Color.white.opacity(0.08)
                 ))
+                .accessibilityLabel("键盘")
+                .accessibilityValue(showKeyboard ? "开" : "关")
                 .accessibilityIdentifier("display.keyboard")
             }
 
@@ -298,16 +300,16 @@ struct DisplayView: View {
                     .frame(width: 40, height: 40)
             }
             .buttonStyle(PillButtonStyle())
-            .accessibilityLabel("Stream settings")
+            .accessibilityLabel("传输设置")
             .accessibilityIdentifier("display.settings")
 
             Button {
                 connectionManager.cancel()
             } label: {
-                toolbarLabel("Disconnect", "xmark")
+                toolbarLabel("断开连接", "xmark")
             }
             .buttonStyle(PillButtonStyle(foreground: Theme.danger, fill: Theme.danger.opacity(0.14)))
-            .accessibilityLabel("Disconnect")
+            .accessibilityLabel("断开连接")
             .accessibilityIdentifier("display.disconnect")
         }
         .padding(6)
@@ -331,10 +333,10 @@ struct DisplayView: View {
             ProgressView()
                 .tint(Theme.text)
                 .controlSize(.large)
-            Text("Reconnecting to your PC")
+            Text("正在重新连接电脑")
                 .font(.app(18, .semibold, relativeTo: .headline))
                 .foregroundStyle(Theme.text)
-            Text("The picture comes back as soon as the PC answers.")
+            Text("电脑响应后，画面会自动恢复。")
                 .font(.app(14, relativeTo: .callout))
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)

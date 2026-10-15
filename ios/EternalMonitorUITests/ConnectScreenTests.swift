@@ -30,7 +30,7 @@ final class ConnectScreenTests: XCTestCase {
         let settings = app.buttons["settings.button"]
         XCTAssertTrue(settings.waitForExistence(timeout: 10))
         settings.tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.done"].exists)
         let allowUSB = app.switches["settings.allowUSB"]
         XCTAssertTrue(allowUSB.exists)
@@ -44,13 +44,13 @@ final class ConnectScreenTests: XCTestCase {
         XCTAssertEqual(allowUSB.value as? String, "0")
         app.buttons["settings.done"].tap()
         XCTAssertTrue(app.textFields["connect.host"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.staticTexts["connect.usbStatus"].label, "USB: off")
+        XCTAssertEqual(app.staticTexts["connect.usbStatus"].label, "USB 连接已关闭")
         settings.tap()
         XCTAssertTrue(allowUSB.waitForExistence(timeout: 5))
         allowUSB.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertEqual(allowUSB.value as? String, "1")
         app.buttons["settings.done"].tap()
-        let listening = NSPredicate(format: "label == %@", "USB: waiting for a cable")
+        let listening = NSPredicate(format: "label == %@", "等待接入 USB 数据线")
         expectation(for: listening, evaluatedWith: app.staticTexts["connect.usbStatus"])
         waitForExpectations(timeout: 5)
     }

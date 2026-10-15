@@ -15,7 +15,12 @@ final class KeyboardRelayTests: XCTestCase {
         XCTAssertTrue(keyboard.waitForExistence(timeout: 15))
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        app.typeText("Hi!\n")
+        let draft = app.textViews["keyboard.input"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 5))
+        draft.typeText("Hi!")
+        XCTAssertTrue(injections(path: path, after: before).isEmpty,
+                      "Draft editing must not type into the PC before confirmation")
+        app.buttons["keyboard.submitReturn"].tap()
         let commands = ["Unicode(72)", "Unicode(105)", "Unicode(33)", "KeyDown { scan: 28, extended: false }", "KeyUp { scan: 28, extended: false }"]
         let relayed = NSPredicate { _, _ in
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), data.count >= before else { return false }
@@ -27,10 +32,12 @@ final class KeyboardRelayTests: XCTestCase {
         capture("keyboard-relay", app: app)
         let control = app.buttons["keyboard.key.224"]
         control.tap()
-        XCTAssertEqual(control.value as? String, "On")
+        XCTAssertEqual(control.value as? String, "已按下")
         app.buttons["keyboard.key.80"].tap()
-        XCTAssertEqual(control.value as? String, "Off")
-        app.keyboards.buttons["Hide keyboard"].tap()
+        XCTAssertEqual(control.value as? String, "未按下")
+        // The app's stable close control works regardless of the simulator's
+        // system-keyboard language or floating/docked layout.
+        app.buttons["keyboard.done"].tap()
         verifyDismissalAndRestoreHUD(app: app, keyboard: keyboard)
         capture("keyboard-dismissed", app: app)
         keyboard.tap()
@@ -51,8 +58,14 @@ final class KeyboardRelayTests: XCTestCase {
         waitForExpectations(timeout: 6)
         app.tap(withNumberOfTaps: 1, numberOfTouches: 3)
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
-        XCTAssertEqual(keyboard.label, "Keyboard")
+        XCTAssertEqual(keyboard.label, "键盘")
         XCTAssertTrue(app.buttons["display.disconnect"].exists)
+    }
+
+    private func injections(path: String, after offset: Int) -> [String] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), data.count >= offset else { return [] }
+        return String(decoding: data.dropFirst(offset), as: UTF8.self)
+            .components(separatedBy: .newlines).filter { $0.contains("Input injection command=") }
     }
 
     private func capture(_ name: String, app: XCUIApplication) {

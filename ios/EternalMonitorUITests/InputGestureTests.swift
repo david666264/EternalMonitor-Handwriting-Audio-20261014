@@ -53,7 +53,10 @@ final class InputGestureTests: XCTestCase {
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
         keyboard.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        app.typeText("Hi!\n")
+        let draft = app.textViews["keyboard.input"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 5))
+        draft.typeText("Hi!")
+        app.buttons["keyboard.submitReturn"].tap()
         let relayed = NSPredicate { _, _ in
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), data.count >= before else { return false }
             let log = String(decoding: data.dropFirst(before), as: UTF8.self)

@@ -12,9 +12,9 @@ final class PairingSheetModel: ObservableObject, Identifiable {
     func reject(_ status: HelloStatus, now: Date = Date()) {
         if status == .rateLimited {
             blockedUntil = now.addingTimeInterval(60)
-            error = "Too many attempts. Wait before trying again."
+            error = "尝试次数过多，请稍后重试。"
         } else if submitting {
-            error = "That code didn’t match. Check the PC and try again."
+            error = "配对码不匹配，请核对电脑上的数字后重试。"
         }
         submitting = false
     }
@@ -26,7 +26,7 @@ final class PairingSheetModel: ObservableObject, Identifiable {
     func submit(now: Date = Date()) -> UInt32? {
         guard !submitting, remaining(at: now) == 0 else { return nil }
         guard code.utf8.count == 6, code.utf8.allSatisfy({ (48...57).contains($0) }), let number = UInt32(code) else {
-            error = "Enter all six digits shown on the PC."
+            error = "请输入电脑上显示的完整六位配对码。"
             return nil
         }
         error = nil
@@ -36,6 +36,6 @@ final class PairingSheetModel: ObservableObject, Identifiable {
 
     func timedOut() {
         submitting = false
-        error = "The PC did not respond. Check the connection and try again."
+        error = "电脑未响应，请检查连接后重试。"
     }
 }

@@ -20,7 +20,7 @@ final class PairingFlowTests: XCTestCase {
         app.buttons["pairing.submit"].tap()
         let error = app.staticTexts["pairing.error"]
         XCTAssertTrue(error.waitForExistence(timeout: 5))
-        XCTAssertTrue(error.label.contains("didn’t match"))
+        XCTAssertTrue(error.label.contains("不匹配"))
         XCTAssertTrue(input.exists)
         capture("pairing-wrong-code", app: app)
         input.tap()
@@ -39,7 +39,7 @@ final class PairingFlowTests: XCTestCase {
         XCTAssertFalse(input.exists)
         capture("pairing-token-reconnect", app: app)
         app.buttons["display.settings"].tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
         let forget = app.buttons["settings.forgetPairings"]
         for _ in 0..<3 where !forget.isHittable { app.swipeUp() }
         XCTAssertTrue(forget.isHittable)

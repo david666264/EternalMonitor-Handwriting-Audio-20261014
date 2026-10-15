@@ -13,6 +13,7 @@ struct TouchRelayView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> RelayTouchUIView {
         let view = RelayTouchUIView()
+        view.keyboardDraftStore = connectionManager.keyboardDraft
         view.onEvents = { [weak connectionManager] events in
             connectionManager?.sendInputs(events)
         }
@@ -23,6 +24,7 @@ struct TouchRelayView: UIViewRepresentable {
 
     func updateUIView(_ view: RelayTouchUIView, context: Context) {
         view.videoSize = connectionManager.videoSize
+        view.keyboardDraftStore = connectionManager.keyboardDraft
         view.onToggleHUD = onToggleHUD
         view.commandAsControl = settings.commandAsControl
         view.keyboardSupported = connectionManager.sessionHasKeyboard
@@ -42,7 +44,16 @@ final class RelayTouchUIView: UIView {
     var nativePenSupported = false
     var drawingMode = false
     var keyboardVisible = false
-    var active = true { didSet { if !active && oldValue { cancelInput(); resignFirstResponder(); keyboardInput.resignFirstResponder() } } }
+    var active = true { didSet { if !active && oldValue {
+        cancelInput(); resignFirstResponder(); keyboardInput.resignFirstResponder()
+        keyboardInput.isHidden = true
+    } } }
+    var canSendKeyboardInput: Bool { active && keyboardSupported }
+    var hasRemoteStickyModifiers: Bool { !keyboard.sticky.isEmpty }
+    var hasRemoteHardwareState: Bool { keyboard.hasHardwareState }
+    var keyboardDraftStore: KeyboardDraftStore? {
+        didSet { if keyboardDraftStore !== oldValue { keyboardInput.draftStore = keyboardDraftStore } }
+    }
     override var canBecomeFirstResponder: Bool { active }
     var onToggleHUD: (() -> Void)?
     var videoSize: CGSize = .zero {
@@ -60,19 +71,18 @@ final class RelayTouchUIView: UIView {
     private var keyboard = KeyboardRelayMachine()
     private var pointer = PointerRelayMachine()
     private lazy var keyboardInput: RelayKeyboardInputView = {
-        let view = RelayKeyboardInputView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let view = RelayKeyboardInputView(frame: .zero, textContainer: nil)
         view.relay = self
         view.onDismiss = { [weak self] in self?.onKeyboardDismiss?() }
         view.isAccessibilityElement = false
-        view.accessibilityLabel = "Remote keyboard"
-        view.accessibilityIdentifier = "keyboard.input"
-        view.accessibilityTraits = .allowsDirectInteraction
+        view.isHidden = true
         addSubview(view)
         return view
     }()
     private var holdTimer: DispatchWorkItem?
     private var hudTapFired = false
     private var softwareKeyboardPresented = false
+    private var keyboardFrameInScreen: CGRect?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -81,7 +91,7 @@ final class RelayTouchUIView: UIView {
         // VoiceOver: this surface IS the remote pointer — pass touches
         // straight through instead of narrating them.
         isAccessibilityElement = true
-        accessibilityLabel = "Remote control surface. Touches control the PC."
+        accessibilityLabel = "电脑控制区域。触摸此处可操作电脑。"
         accessibilityTraits = .allowsDirectInteraction
         accessibilityIdentifier = "display.relay"
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(pointerScrolled(_:)))
@@ -157,6 +167,19 @@ final class RelayTouchUIView: UIView {
         // subsequent sample could draw a line across the newly fitted image.
         if inputBounds != bounds.size && pencil.isDown { cancelInput() }
         inputBounds = bounds.size
+        layoutKeyboardDraft()
+    }
+
+    /// Keep a real, visible document above either a docked or floating system
+    /// keyboard. The video/input mapping remains unchanged while editing.
+    private func layoutKeyboardDraft() {
+        guard keyboardVisible, keyboardSupported, active else { return }
+        var localKeyboard: CGRect?
+        if let window, let frame = keyboardFrameInScreen {
+            localKeyboard = convert(window.screen.coordinateSpace.convert(frame, to: window), from: window)
+        }
+        keyboardInput.frame = KeyboardDraftLayout.frame(in: bounds, safeArea: safeAreaInsets, keyboard: localKeyboard)
+        bringSubviewToFront(keyboardInput)
     }
 
     func updateKeyboardPresentation() {
@@ -166,8 +189,13 @@ final class RelayTouchUIView: UIView {
         // Expose the active responder so typing reaches the remote keyboard.
         isAccessibilityElement = !showingKeyboard
         keyboardInput.isAccessibilityElement = showingKeyboard
+        keyboardInput.isHidden = !showingKeyboard
         if showingKeyboard {
-            if !keyboardInput.isFirstResponder { keyboardInput.becomeFirstResponder() }
+            layoutKeyboardDraft()
+            if !keyboardInput.isFirstResponder {
+                keyboardInput.prepareForPresentation()
+                keyboardInput.becomeFirstResponder()
+            }
         } else {
             if keyboardInput.isFirstResponder {
                 onEvents?(keyboard.cancel())
@@ -181,16 +209,17 @@ final class RelayTouchUIView: UIView {
     @objc private func resumeInput() { updateKeyboardPresentation() }
 
     @objc private func keyboardFrameChanged(_ notification: Notification) {
-        guard keyboardVisible, keyboardInput.isFirstResponder, let window,
-              let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        keyboardFrameInScreen = frame
+        layoutKeyboardDraft()
+        guard keyboardVisible, keyboardInput.isFirstResponder, let window else { return }
         let visible = window.bounds.intersection(window.screen.coordinateSpace.convert(frame, to: window))
         let accessoryHeight = keyboardInput.inputAccessoryView?.bounds.height ?? 0
         if !visible.isNull && visible.height > accessoryHeight + window.safeAreaInsets.bottom + 1 {
             softwareKeyboardPresented = true
-        } else if softwareKeyboardPresented {
-            // The system Hide Keyboard key leaves an accessory-only responder.
-            // Finish that dismissal, while still permitting an accessory bar
-            // when a physical keyboard was attached from the start.
+        } else if softwareKeyboardPresented && frame.minY >= window.screen.bounds.maxY - 1 {
+            // Do not treat a partially off-screen floating keyboard or an
+            // attached hardware keyboard's accessory-only mode as dismissal.
             softwareKeyboardPresented = false
             keyboardVisible = false
             DispatchQueue.main.async { [weak self] in self?.keyboardInput.resignFirstResponder() }
@@ -200,6 +229,8 @@ final class RelayTouchUIView: UIView {
     func keyboardDidResign() {
         keyboardVisible = false
         softwareKeyboardPresented = false
+        keyboardFrameInScreen = nil
+        keyboardInput.isHidden = true
         onEvents?(keyboard.cancel())
         keyboardInput.updateSticky(keyboard.sticky)
         // UIKit's Hide Keyboard key also dismisses the responder. Keep the
@@ -229,6 +260,15 @@ final class RelayTouchUIView: UIView {
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard active, keyboardSupported else { return super.pressesBegan(presses, with: event) }
+        // A native editor may pass an unhandled press up the responder chain.
+        // Its explicitly relayed shortcut uses the separate method below;
+        // never also inject a letter belonging to the local IME document.
+        guard !keyboardInput.isFirstResponder else { return super.pressesBegan(presses, with: event) }
+        relayHardwarePressesBegan(presses)
+    }
+
+    func relayHardwarePressesBegan(_ presses: Set<UIPress>) {
+        guard canSendKeyboardInput else { return }
         for press in presses {
             guard let key = press.key else { continue }
             onEvents?(keyboard.hardware(usage: UInt16(key.keyCode.rawValue), down: true,
@@ -238,6 +278,12 @@ final class RelayTouchUIView: UIView {
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard active, keyboardSupported else { return super.pressesEnded(presses, with: event) }
+        guard !keyboardInput.isFirstResponder else { return super.pressesEnded(presses, with: event) }
+        relayHardwarePressesEnded(presses)
+    }
+
+    func relayHardwarePressesEnded(_ presses: Set<UIPress>) {
+        guard canSendKeyboardInput else { return }
         for press in presses {
             guard let key = press.key else { continue }
             onEvents?(keyboard.hardware(usage: UInt16(key.keyCode.rawValue), down: false,
@@ -247,6 +293,11 @@ final class RelayTouchUIView: UIView {
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard !keyboardInput.isFirstResponder else { return super.pressesCancelled(presses, with: event) }
+        relayHardwarePressesCancelled()
+    }
+
+    func relayHardwarePressesCancelled() {
         onEvents?(keyboard.cancel())
         keyboardInput.updateSticky(keyboard.sticky)
     }
@@ -254,6 +305,15 @@ final class RelayTouchUIView: UIView {
     func insertRemoteText(_ text: String) {
         guard active, keyboardSupported else { return }
         onEvents?(keyboard.text(text)); keyboardInput.updateSticky(keyboard.sticky)
+    }
+    func commitRemoteDraft(_ text: String, appendReturn: Bool) {
+        guard canSendKeyboardInput else { return }
+        // Text submission is not a Ctrl/Alt shortcut. Release any armed
+        // modifier first, then transmit the exact committed UTF-16 document.
+        var events = keyboard.cancel() + keyboard.text(text)
+        if appendReturn { events += keyboard.tap(0x28) }
+        onEvents?(events)
+        keyboardInput.updateSticky(keyboard.sticky)
     }
     func tapRemoteKey(_ usage: UInt16) {
         guard active, keyboardSupported else { return }
