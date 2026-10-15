@@ -69,14 +69,38 @@ final class RelayKeyboardInputViewTests: XCTestCase {
         XCTAssertEqual(events, expected.text("配方😀\n第二行") + expected.tap(0x28))
     }
 
-    func testPasteUsesNativeDocumentAndNeverInjectsBeforeSubmission() {
+    func testPasteUsesNativeDocumentAndNeverInjectsBeforeSubmission() async throws {
         let (editor, relay) = makeEditor()
         var events: [WireInputEvent] = []
         relay.onEvents = { events += $0 }
+        // UITextView's real paste pipeline needs an on-screen input document
+        // and loads clipboard item providers asynchronously. An unattached
+        // editor is not the same fixture as the visible keyboard panel.
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = try XCTUnwrap(scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)
+        let previousWindow = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        editor.frame = CGRect(x: 20, y: 80, width: min(700, window.bounds.width - 40), height: 106)
+        controller.view.addSubview(editor)
+        controller.view.layoutIfNeeded()
         let previous = UIPasteboard.general.items
-        defer { UIPasteboard.general.items = previous }
+        defer {
+            editor.resignFirstResponder()
+            editor.removeFromSuperview()
+            window.isHidden = true
+            previousWindow?.makeKey()
+            UIPasteboard.general.items = previous
+        }
         UIPasteboard.general.string = "中文，English 😀"
+        XCTAssertTrue(editor.becomeFirstResponder())
+        XCTAssertTrue(editor.isFirstResponder)
+        XCTAssertTrue(editor.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+        let pasted = expectation(forNotification: UITextView.textDidChangeNotification, object: editor)
         editor.paste(nil)
+        await fulfillment(of: [pasted], timeout: 5)
         XCTAssertEqual(editor.text, "中文，English 😀")
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(editor.submitDraft())

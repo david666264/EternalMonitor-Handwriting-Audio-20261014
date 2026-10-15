@@ -87,13 +87,38 @@ final class ChineseInputTests: XCTestCase {
 
     private func openKeyboard(_ app: XCUIApplication) -> XCUIElement {
         let toggle = app.buttons["display.keyboard"]
-        if !toggle.exists { app.tap(withNumberOfTaps: 1, numberOfTouches: 3) }
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        toggle.tap()
         let draft = app.textViews["keyboard.input"]
-        XCTAssertTrue(draft.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let signal = app.descendants(matching: .any)["display.signal"].firstMatch
+        for attempt in 1...3 {
+            if draft.exists && app.keyboards.firstMatch.exists { return draft }
+            // Finding controls during launch/dismissal may use almost all of
+            // their five-second visible interval on a busy simulator. Wait
+            // for that interval to finish, then reveal a fresh HUD instead
+            // of tapping a button that is already about to disappear.
+            if toggle.exists {
+                _ = appears(toggle, where: "exists == false", within: 6)
+            }
+            if !toggle.exists { app.tap(withNumberOfTaps: 1, numberOfTouches: 3) }
+            // A reconnecting display must recover before it can accept input.
+            guard appears(signal, where: "exists == true AND label == %@", "正在传输", within: 3),
+                  let frame = try? toggle.snapshot().frame, !frame.isEmpty else { continue }
+            // snapshot() is throwable if the HUD faded during the lookup;
+            // direct element.tap() fails the whole test in that same race.
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
+            if appears(draft, within: 3), appears(app.keyboards.firstMatch, within: 3) { return draft }
+            recordDebug("chinese-input-open-attempt-\(attempt)", app: app)
+        }
+        recordDebug("chinese-input-open-failed", app: app)
+        XCTFail("A connected display must open the native input draft")
         return draft
+    }
+
+    private func appears(_ element: XCUIElement, where format: String = "exists == true",
+                         _ arguments: CVarArg..., within timeout: TimeInterval) -> Bool {
+        let check = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: format, argumentArray: arguments), object: element)
+        return XCTWaiter().wait(for: [check], timeout: timeout) == .completed
     }
 
     private func paste(_ text: String, into draft: XCUIElement, app: XCUIApplication) {
@@ -140,5 +165,19 @@ final class ChineseInputTests: XCTestCase {
         image.name = name
         image.lifetime = .keepAlways
         add(image)
+    }
+
+    private func recordDebug(_ name: String, app: XCUIApplication) {
+        capture(name, app: app)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = name + "-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: logPath)) {
+            let log = XCTAttachment(string: String(decoding: data.suffix(16_384), as: UTF8.self))
+            log.name = name + "-host-log-tail"
+            log.lifetime = .keepAlways
+            add(log)
+        }
     }
 }

@@ -117,22 +117,31 @@ final class USBStreamTests: XCTestCase {
     }
 
     private func assertTransport(_ name: String, app: XCUIApplication, timeout: TimeInterval = 10) {
-        let hud = app.buttons["display.hud"]
-        showDrawingControls(app, showing: hud)
         // A cable can arrive during the host's retry backoff. Wait for the
         // display before interacting; a premature gesture can hide its HUD.
-        XCTAssertTrue(hud.waitForExistence(timeout: timeout), app.debugDescription)
-        let matches = NSPredicate(format: "exists == true AND label CONTAINS %@", name)
-        expectation(for: matches, evaluatedWith: hud)
-        waitForExpectations(timeout: timeout)
+        assertHUD(contains: name, app: app, timeout: timeout)
     }
 
     private func assertAudio(_ text: String, app: XCUIApplication) {
+        assertHUD(contains: text, app: app, timeout: 10)
+    }
+
+    private func assertHUD(contains text: String, app: XCUIApplication, timeout: TimeInterval) {
         let hud = app.buttons["display.hud"]
-        showDrawingControls(app, showing: hud)
         let matches = NSPredicate(format: "exists == true AND label CONTAINS %@", text)
-        expectation(for: matches, evaluatedWith: hud)
-        waitForExpectations(timeout: 10)
+        let deadline = Date().addingTimeInterval(timeout)
+        // HUD controls fade after five seconds. A busy runner can spend the
+        // remaining visible time checking USB before it checks mute status.
+        // Reopen only a hidden HUD and require the same full status text;
+        // waiting on a vanished element cannot prove or disprove audio state.
+        while Date() < deadline {
+            showDrawingControls(app, showing: hud)
+            let check = XCTNSPredicateExpectation(predicate: matches, object: hud)
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            if XCTWaiter().wait(for: [check], timeout: min(2, remaining)) == .completed { return }
+        }
+        XCTFail("HUD never showed \"\(text)\"", file: #filePath, line: #line)
     }
 
     private func showDrawingControls(_ app: XCUIApplication, showing element: XCUIElement) {

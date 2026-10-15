@@ -64,6 +64,8 @@ jobs:
           brew install xcodegen ffmpeg@7 pkgconf
           echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg@7)/lib/pkgconfig" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: drawing-audio-tests
       - name: Create the test iPad
         id: sim
         run: |
