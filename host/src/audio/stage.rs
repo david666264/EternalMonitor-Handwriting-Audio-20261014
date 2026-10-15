@@ -109,6 +109,7 @@ impl Source {
 struct CaptureSession {
     id: u32,
     source: Source,
+    _output_route: super::output_route::OutputRouteLease,
     resampler: Option<Resampler>,
     encoder: OpusEncoder,
     mark_discontinuity: bool,
@@ -118,9 +119,17 @@ struct CaptureSession {
 impl CaptureSession {
     fn new(id: u32, shared: &SharedControl) -> AudioResult<Self> {
         let max_payload = capture_audio_payload_limit(shared.session.lock().peer());
+        // Route before opening WASAPI; dropping a failed source creation also
+        // releases the temporary output rather than leaving Windows silent.
+        let output_route = if std::env::var("ETERNAL_AUDIO").as_deref() == Ok("synthetic") {
+            None
+        } else {
+            Some(super::output_route::OutputRouteLease::acquire(id))
+        };
         Ok(Self {
             id,
             source: Source::open()?,
+            _output_route: output_route.unwrap_or_default(),
             resampler: None,
             encoder: OpusEncoder::new(max_payload)?,
             mark_discontinuity: true,

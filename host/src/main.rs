@@ -37,6 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Session log file initialized"
     );
 
+    eternal_host::audio::output_route::recover_previous_run();
+
     // Never leave a virtual display attached across runs. If a previous run crashed or was
     // force-killed while streaming the virtual extended display, the VDD device is still enabled
     // and shows up as a phantom monitor. Disabling it unconditionally at startup guarantees the
@@ -49,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            eternal_host::audio::output_route::restore_after_panic();
             vdd::disable();
             default_hook(info);
         }));
@@ -292,5 +295,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("EternalMonitor shutting down");
+    eternal_host::audio::output_route::restore_before_exit();
     std::process::exit(0);
 }
