@@ -493,6 +493,88 @@ fn run_encode_loop(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NvencDevicePreference {
+    Auto,
+    D3d11,
+    Cuda,
+}
+
+impl NvencDevicePreference {
+    fn from_override(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            None => Self::Auto,
+            Some(value) if value.eq_ignore_ascii_case("auto") => Self::Auto,
+            Some(value) if value.eq_ignore_ascii_case("d3d11") => Self::D3d11,
+            // Unknown values keep the original CUDA path, including an empty
+            // override. A typo must not silently opt into another device API.
+            _ => Self::Cuda,
+        }
+    }
+}
+
+fn prefer_nvenc_d3d11(
+    is_windows: bool,
+    encoder_name: &str,
+    pixel_format: ffmpeg_next::format::Pixel,
+    preference: NvencDevicePreference,
+) -> bool {
+    is_windows
+        && matches!(encoder_name, "h264_nvenc" | "hevc_nvenc")
+        && pixel_format == ffmpeg_next::format::Pixel::YUV420P
+        && preference != NvencDevicePreference::Cuda
+}
+
+/// Keep FFmpeg's software-input path: this supplies a DirectX encode device,
+/// not a hardware-frames pool or an upload/conversion filter.
+#[cfg(target_os = "windows")]
+fn attach_nvenc_d3d11_device(
+    encoder: &mut ffmpeg_next::codec::encoder::video::Video,
+) -> Result<(), ffmpeg_next::Error> {
+    unsafe {
+        let mut options = std::ptr::null_mut();
+        let option_result = ffmpeg_next::ffi::av_dict_set(
+            &mut options,
+            b"vendor_id\0".as_ptr().cast(),
+            b"0x10de\0".as_ptr().cast(),
+            0,
+        );
+        if option_result < 0 {
+            ffmpeg_next::ffi::av_dict_free(&mut options);
+            return Err(ffmpeg_next::Error::from(option_result));
+        }
+
+        let mut device = std::ptr::null_mut();
+        let result = ffmpeg_next::ffi::av_hwdevice_ctx_create(
+            &mut device,
+            ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
+            std::ptr::null(),
+            options,
+            0,
+        );
+        // av_hwdevice_ctx_create borrows the options dictionary; it does not
+        // take ownership. Release it on both success and failure.
+        ffmpeg_next::ffi::av_dict_free(&mut options);
+        if result < 0 || device.is_null() {
+            // Normally null on failure, but unref any partially returned
+            // device as well. No AVBufferRef escapes a failed initialization.
+            ffmpeg_next::ffi::av_buffer_unref(&mut device);
+            return Err(ffmpeg_next::Error::from(if result < 0 {
+                result
+            } else {
+                -libc::ENOMEM
+            }));
+        }
+
+        let context = encoder.as_mut_ptr();
+        ffmpeg_next::ffi::av_buffer_unref(&mut (*context).hw_device_ctx);
+        // Transfer this reference to AVCodecContext. Its destructor releases
+        // it even if avcodec_open2 fails; do not unref `device` again here.
+        (*context).hw_device_ctx = device;
+        Ok(())
+    }
+}
+
 struct EncoderState {
     #[cfg(target_os = "macos")]
     native_converter: Option<vimage::Converter>,
@@ -577,37 +659,69 @@ impl EncoderState {
             formats
         };
         let pixel_format = select_input(input_mode, encoder_name, &supported)?;
-        let context = ffmpeg_next::codec::Context::new_with_codec(codec);
-        let mut encoder = context.encoder().video()?;
-
-        encoder.set_width(width);
-        encoder.set_height(height);
-        encoder.set_format(pixel_format);
-        if legacy_pts {
-            encoder.set_time_base(ffmpeg_next::Rational(1, 60));
+        let open_encoder = |with_d3d11_device: bool| -> Result<
+            ffmpeg_next::codec::encoder::video::Encoder,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            // Each attempt owns a fresh context. A failed DirectX open is
+            // completely dropped before retrying the existing CUDA path.
+            let context = ffmpeg_next::codec::Context::new_with_codec(codec);
+            let mut encoder = context.encoder().video()?;
+            encoder.set_width(width);
+            encoder.set_height(height);
+            encoder.set_format(pixel_format);
+            if legacy_pts {
+                encoder.set_time_base(ffmpeg_next::Rational(1, 60));
+            } else {
+                // Microsecond PTS reflects the actual capture cadence.
+                encoder.set_time_base(ffmpeg_next::Rational(1, 1_000_000));
+                encoder.set_frame_rate(Some(ffmpeg_next::Rational(target_fps.max(1) as i32, 1)));
+            }
+            encoder.set_max_b_frames(0);
+            encoder.set_bit_rate(bitrate_bps.max(500_000) as usize);
+            if encoder_name == "libx264" {
+                // x264 can only reconfigure bitrate when VBV was enabled at open.
+                encoder.set_max_bit_rate(bitrate_bps.max(500_000) as usize);
+                unsafe {
+                    (*encoder.as_mut_ptr()).rc_buffer_size = (bitrate_bps.max(500_000) / 2) as i32
+                };
+            }
+            encoder.set_gop(30);
+            configure_encoder_flags(&mut encoder, encoder_name);
+            if with_d3d11_device {
+                #[cfg(target_os = "windows")]
+                attach_nvenc_d3d11_device(&mut encoder)?;
+            }
+            Ok(encoder.open_with(encoder_options(encoder_name))?)
+        };
+        // Process-local escape hatches: cuda restores the previous device
+        // API; combining it with ETERNAL_NVENC_SURFACES=4 restores its old
+        // surface count. Neither setting changes saved user preferences.
+        let device_override = std::env::var("ETERNAL_NVENC_DEVICE").ok();
+        let preference = NvencDevicePreference::from_override(device_override.as_deref());
+        let encoder = if prefer_nvenc_d3d11(
+            cfg!(target_os = "windows"),
+            encoder_name,
+            pixel_format,
+            preference,
+        ) {
+            match open_encoder(true) {
+                Ok(encoder) => {
+                    info!(encoder = encoder_name, device = "d3d11", "NVENC device opened");
+                    encoder
+                }
+                Err(error) => {
+                    warn!(
+                        encoder = encoder_name,
+                        %error,
+                        "DirectX NVENC initialization failed; retrying the CUDA path"
+                    );
+                    open_encoder(false)?
+                }
+            }
         } else {
-            // Microsecond PTS from real capture times: rate control finally
-            // sees the true cadence (idle keepalives, 30 fps modes) instead of
-            // being told every frame is 1/60s apart.
-            encoder.set_time_base(ffmpeg_next::Rational(1, 1_000_000));
-            encoder.set_frame_rate(Some(ffmpeg_next::Rational(target_fps.max(1) as i32, 1)));
-        }
-        encoder.set_max_b_frames(0);
-        encoder.set_bit_rate(bitrate_bps.max(500_000) as usize);
-        if encoder_name == "libx264" {
-            // x264 can only reconfigure bitrate when VBV was enabled at open.
-            // Limit bursts to half a second at the current target bitrate.
-            encoder.set_max_bit_rate(bitrate_bps.max(500_000) as usize);
-            unsafe {
-                (*encoder.as_mut_ptr()).rc_buffer_size = (bitrate_bps.max(500_000) / 2) as i32
-            };
-        }
-        encoder.set_gop(30);
-        configure_encoder_flags(&mut encoder, encoder_name);
-
-        let opts = encoder_options(encoder_name);
-
-        let encoder = encoder.open_with(opts)?;
+            open_encoder(false)?
+        };
         log_encoder_configuration(encoder_name, &encoder);
         info!(
             width,
@@ -733,7 +847,35 @@ fn note_encoder_opened(shared: &SharedControl, encoder_name: &str) {
         .set_codec_name(codec_display_name_for(encoder_name));
 }
 
-fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'_> {
+fn nvenc_surface_count(is_windows: bool, value: Option<&str>) -> Option<&'static str> {
+    if !is_windows {
+        return None;
+    }
+    Some(match value.map(str::trim) {
+        None => "2",
+        Some("1") => "1",
+        Some("2") => "2",
+        Some("3") => "3",
+        Some("4") => "4",
+        // Bad overrides retain FFmpeg's previous four-surface allocation.
+        _ => "4",
+    })
+}
+
+fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'static> {
+    let surface_override = std::env::var("ETERNAL_NVENC_SURFACES").ok();
+    encoder_options_for_platform(
+        encoder_name,
+        cfg!(target_os = "windows"),
+        surface_override.as_deref(),
+    )
+}
+
+fn encoder_options_for_platform(
+    encoder_name: &str,
+    is_windows: bool,
+    surface_override: Option<&str>,
+) -> ffmpeg_next::Dictionary<'static> {
     let mut opts = ffmpeg_next::Dictionary::new();
     match encoder_name {
         "h264_nvenc" => {
@@ -814,6 +956,13 @@ fn encoder_options(encoder_name: &str) -> ffmpeg_next::Dictionary<'_> {
         }
         _ => {
             opts.set("profile", "baseline");
+        }
+    }
+    if matches!(encoder_name, "h264_nvenc" | "hevc_nvenc") {
+        if let Some(surfaces) = nvenc_surface_count(is_windows, surface_override) {
+            // No B frames or lookahead: two IO surfaces retain overlap while
+            // avoiding FFmpeg's default allocation of four full-size inputs.
+            opts.set("surfaces", surfaces);
         }
     }
     opts
@@ -1287,6 +1436,69 @@ fn find_ffmpeg_exe() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvenc_device_overrides_are_conservative_and_do_not_change_other_paths() {
+        use ffmpeg_next::format::Pixel;
+        use NvencDevicePreference::{Auto, Cuda, D3d11};
+
+        assert_eq!(NvencDevicePreference::from_override(None), Auto);
+        assert_eq!(NvencDevicePreference::from_override(Some(" AUTO ")), Auto);
+        assert_eq!(NvencDevicePreference::from_override(Some("D3D11")), D3d11);
+        for value in ["cuda", " CUDA ", "", "directx", "mistyped"] {
+            assert_eq!(NvencDevicePreference::from_override(Some(value)), Cuda);
+        }
+        for name in ["h264_nvenc", "hevc_nvenc"] {
+            for preference in [Auto, D3d11] {
+                assert!(prefer_nvenc_d3d11(true, name, Pixel::YUV420P, preference));
+                assert!(!prefer_nvenc_d3d11(false, name, Pixel::YUV420P, preference));
+                for pixel in [Pixel::BGRA, Pixel::BGRZ, Pixel::NV12] {
+                    assert!(!prefer_nvenc_d3d11(true, name, pixel, preference));
+                }
+            }
+            assert!(!prefer_nvenc_d3d11(true, name, Pixel::YUV420P, Cuda));
+        }
+        for name in ["libx264", "libx265", "h264_amf", "h264_qsv", "unknown"] {
+            assert!(!prefer_nvenc_d3d11(true, name, Pixel::YUV420P, Auto));
+        }
+    }
+
+    #[test]
+    fn nvenc_surface_overrides_are_bounded_and_windows_only() {
+        assert_eq!(nvenc_surface_count(true, None), Some("2"));
+        for (value, expected) in [("1", "1"), (" 2 ", "2"), ("3", "3"), ("4", "4")] {
+            assert_eq!(nvenc_surface_count(true, Some(value)), Some(expected));
+        }
+        for value in ["", "0", "5", "-1", "999999", "auto", "two"] {
+            assert_eq!(nvenc_surface_count(true, Some(value)), Some("4"));
+        }
+        for value in [None, Some("1"), Some("4"), Some("bad")] {
+            assert_eq!(nvenc_surface_count(false, value), None);
+        }
+    }
+
+    #[test]
+    fn nvenc_options_keep_low_latency_and_restore_previous_surface_count() {
+        for name in ["h264_nvenc", "hevc_nvenc"] {
+            let options = encoder_options_for_platform(name, true, None);
+            assert_eq!(options.get("surfaces"), Some("2"));
+            assert_eq!(options.get("delay"), Some("0"));
+            assert_eq!(options.get("preset"), Some("p1"));
+            assert_eq!(options.get("tune"), Some("ll"));
+            assert_eq!(options.get("rc"), Some("cbr"));
+            assert_eq!(options.get("zerolatency"), Some("1"));
+
+            let restored = encoder_options_for_platform(name, true, Some("4"));
+            assert_eq!(restored.get("surfaces"), Some("4"));
+            let other_platform = encoder_options_for_platform(name, false, Some("2"));
+            assert_eq!(other_platform.get("surfaces"), None);
+            assert_eq!(other_platform.get("delay"), Some("0"));
+        }
+        for name in ["libx264", "libx265", "h264_amf", "h264_qsv", "unknown"] {
+            let options = encoder_options_for_platform(name, true, Some("1"));
+            assert_eq!(options.get("surfaces"), None);
+        }
+    }
 
     #[test]
     fn software_bitrate_changes_preserve_decoding_and_reduce_packet_size() {

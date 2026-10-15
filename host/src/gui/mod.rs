@@ -1103,7 +1103,10 @@ pub fn run_gui(control: GuiControl) -> eframe::Result<()> {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon_256.png"))
         .expect("embedded icon PNG is valid");
 
-    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    // Preserve eframe's normal low-latency swapchain when customizing the
+    // device below; the standalone wgpu configuration defaults to two frames.
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default()
+        .with_surface_config(eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY);
     if cfg!(windows) {
         if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
             // The control window is a light 2D UI, independent of the stream's
