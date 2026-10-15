@@ -11,6 +11,19 @@ use crate::capture::timing::FrameTimer;
 use crate::control::SharedControl;
 use crate::stats::PIPELINE_STATS;
 use crate::supervisor::{generation_is_current, HealthReporter, Stage, StageOutcome};
+use crate::transport::link::{LinkId, PeerId};
+
+fn capture_audio_payload_limit(peer: Option<PeerId>) -> usize {
+    let datagram_limit = if peer.is_some_and(|peer| matches!(peer.link, LinkId::Usb { .. })) {
+        // USB uses length-prefixed TCP frames, so the existing wire limit
+        // applies independently of the video fragmentation setting.
+        eternal_wire::v2::MAX_DGRAM_SIZE
+    } else {
+        // Preserve the conservative UDP encoder budget.
+        eternal_wire::v2::media::MIN_DGRAM_SIZE
+    };
+    datagram_limit - eternal_wire::v2::audio::AUDIO_HEADER_SIZE
+}
 
 // A synthetic capture block is one Opus frame, so discontinuity resets
 // never discard half a frame and shift the tone/silence boundaries.
@@ -103,12 +116,13 @@ struct CaptureSession {
 }
 
 impl CaptureSession {
-    fn new(id: u32) -> AudioResult<Self> {
+    fn new(id: u32, shared: &SharedControl) -> AudioResult<Self> {
+        let max_payload = capture_audio_payload_limit(shared.session.lock().peer());
         Ok(Self {
             id,
             source: Source::open()?,
             resampler: None,
-            encoder: OpusEncoder::new(576 - eternal_wire::v2::audio::AUDIO_HEADER_SIZE)?,
+            encoder: OpusEncoder::new(max_payload)?,
             mark_discontinuity: true,
             next_input_us: None,
         })
@@ -220,7 +234,7 @@ pub fn run_audio_stage(
                 .is_none_or(|session| session.id != session_id)
             {
                 active = None;
-                let session = CaptureSession::new(session_id)?;
+                let session = CaptureSession::new(session_id, &shared)?;
                 if !generation_is_current(generation) || !shared.running.load(Ordering::SeqCst) {
                     return Ok(false);
                 }
@@ -270,6 +284,55 @@ pub fn run_audio_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_budget_accepts_usb_bursts_without_expanding_udp_packets() {
+        let observed_burst = 552;
+        let usb_budget = capture_audio_payload_limit(Some(PeerId::usb(11)));
+        let udp_budget = capture_audio_payload_limit(Some(PeerId::udp(
+            "127.0.0.1:19891".parse().unwrap(),
+        )));
+        assert!(observed_burst <= usb_budget);
+        assert!(observed_burst > udp_budget);
+        assert_eq!(capture_audio_payload_limit(None), udp_budget);
+    }
+
+    #[test]
+    fn natural_cvbr_startup_burst_fits_usb_and_decodes_one_stereo_frame() {
+        let budget = capture_audio_payload_limit(Some(PeerId::usb(11)));
+        let mut encoder = OpusEncoder::new(budget).unwrap();
+        // Deterministic synthetic transients naturally produce a >548-byte
+        // first packet with the production 128 kbps constrained-VBR settings.
+        // Unlike packet padding, this catches the old capture-stage budget.
+        let pcm: Vec<_> = (0..super::super::FRAME_SAMPLES)
+            .map(|index| {
+                let t = index as f64 / f64::from(SAMPLE_RATE);
+                let wave = |frequency| (std::f64::consts::TAU * frequency * t).sin();
+                (
+                    (0.25 * wave(220.0) + 0.125 * wave(1397.0) + 0.0625 * wave(3911.0))
+                        as f32,
+                    (0.5 * wave(251.0)) as f32,
+                )
+            })
+            .collect();
+        let packet = encoder.encode(&pcm, 0).unwrap();
+        assert!(packet.opus.len() > 548, "fixture no longer exercises the burst: {}", packet.opus.len());
+        assert!(packet.opus.len() <= budget);
+
+        let codec = ffmpeg_next::decoder::find_by_name("opus").unwrap();
+        let mut context = ffmpeg_next::codec::Context::new_with_codec(codec);
+        unsafe {
+            let raw = context.as_mut_ptr();
+            ffmpeg_next::ffi::av_channel_layout_default(&mut (*raw).ch_layout, 2);
+            (*raw).sample_rate = SAMPLE_RATE as i32;
+        }
+        let mut decoder = context.decoder().audio().unwrap();
+        decoder.send_packet(&ffmpeg_next::Packet::copy(&packet.opus)).unwrap();
+        let mut decoded = ffmpeg_next::frame::Audio::empty();
+        decoder.receive_frame(&mut decoded).unwrap();
+        assert_eq!(decoded.samples(), super::super::FRAME_SAMPLES);
+        assert_eq!(decoded.channel_layout(), ffmpeg_next::ChannelLayout::STEREO);
+    }
 
     #[test]
     fn synthetic_silence_keeps_opus_alignment_after_a_late_capture() {

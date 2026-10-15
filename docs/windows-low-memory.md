@@ -24,3 +24,12 @@ behavior. This is a memory optimization, not a promise of a particular frame rat
 
 Implementation references: FFmpeg n7.1.1 `libavcodec/nvenc.c`,
 `libavutil/hwcontext_d3d11va.c`, and `fftools/ffmpeg_enc.c`.
+
+## Independent USB audio limit
+
+USB audio uses the existing 1400-byte wire envelope (1372 bytes of Opus data),
+independently of the video-fragment size setting. A legal constrained-VBR
+transient can exceed the previous 548-byte capture budget. Such packets must
+reach the receiver without truncation rather than disabling the audio session.
+The audio bitrate, frame duration, stereo layout and VBR settings are unchanged.
+The conservative UDP capture budget and UDP sender limit are retained.

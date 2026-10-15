@@ -4,7 +4,7 @@ use crate::audio::SessionPacket;
 use crate::control::SharedControl;
 use crate::stats::PIPELINE_STATS;
 
-use super::link::PeerId;
+use super::link::{LinkId, PeerId};
 use super::usb::TransportLinks;
 
 #[derive(Default)]
@@ -50,7 +50,11 @@ impl AudioSender {
                 || self.last_stream != Some(stream),
         };
         let datagram = header.encode(&queued.packet.opus).ok()?;
-        if datagram.len() > shared.max_dgram.load(std::sync::atomic::Ordering::SeqCst) as usize {
+        let datagram_limit = match peer.link {
+            LinkId::Usb { .. } => eternal_wire::v2::MAX_DGRAM_SIZE,
+            LinkId::Udp => shared.max_dgram.load(std::sync::atomic::Ordering::SeqCst) as usize,
+        };
+        if datagram.len() > datagram_limit {
             self.reset_pending = true;
             PIPELINE_STATS.lock().audio.dropped += 1;
             return None;
@@ -90,6 +94,10 @@ mod tests {
     use std::time::Instant;
 
     fn session(caps: u16) -> (SharedControl, u32) {
+        session_with_peer(caps, PeerId::udp("127.0.0.1:19891".parse().unwrap()))
+    }
+
+    fn session_with_peer(caps: u16, peer: PeerId) -> (SharedControl, u32) {
         let shared = SharedControl::new(9876, 15_000_000);
         shared.pairing.lock().required = false;
         let config = super::super::SharedConfigSource {
@@ -97,7 +105,6 @@ mod tests {
             stream_epoch: 7,
             pen_available: false,
         };
-        let peer = PeerId::udp("127.0.0.1:19891".parse().unwrap());
         shared.session.lock().handle_control(
             peer,
             0,
@@ -136,6 +143,42 @@ mod tests {
                 opus: vec![0xF8, 0xFF, 0xFE],
             },
         }
+    }
+
+    #[test]
+    fn usb_audio_bursts_ignore_video_fragment_size_but_keep_the_wire_limit() {
+        use eternal_wire::v2::{audio::AUDIO_HEADER_SIZE, media::MIN_DGRAM_SIZE, MAX_DGRAM_SIZE};
+
+        let peer = PeerId::usb(11);
+        let (shared, id) = session_with_peer(FEATURE_WANTS_AUDIO, peer);
+        shared.max_dgram.store(MIN_DGRAM_SIZE as u32, Ordering::SeqCst);
+        let mut sender = AudioSender::default();
+        // 552 is the real CVBR burst that previously disabled capture.
+        // Also exercise the largest payload the already installed iPad accepts.
+        for size in [552, MAX_DGRAM_SIZE - AUDIO_HEADER_SIZE] {
+            let mut queued = packet(id, 100);
+            if size == 552 {
+                // One valid 20 ms Opus silence frame with RFC 6716 padding.
+                queued.packet.opus = vec![0xFB, 0x41, 255, 255, 37, 0xFF, 0xFE];
+            }
+            queued.packet.opus.resize(size, 0);
+            let expected = queued.packet.opus.clone();
+            let (destination, bytes) = sender.prepare(queued, &shared, 7, 100).unwrap();
+            assert_eq!(destination, peer);
+            let (_, payload) = AudioHeader::decode(&bytes).unwrap();
+            assert_eq!(payload, expected, "audio must never be truncated");
+        }
+        let mut oversized = packet(id, 100);
+        oversized.packet.opus.resize(MAX_DGRAM_SIZE - AUDIO_HEADER_SIZE + 1, 0);
+        assert!(sender.prepare(oversized, &shared, 7, 100).is_none());
+
+        let (udp, id) = session(FEATURE_WANTS_AUDIO);
+        udp.max_dgram.store(MIN_DGRAM_SIZE as u32, Ordering::SeqCst);
+        let mut queued = packet(id, 100);
+        queued.packet.opus.resize(552, 0);
+        assert!(sender.prepare(queued, &udp, 7, 100).is_none());
+        // The existing UDP budget remains usable after a dropped burst.
+        assert!(sender.prepare(packet(id, 100), &udp, 7, 100).is_some());
     }
 
     #[test]

@@ -141,6 +141,33 @@ mod tests {
     }
 
     #[test]
+    fn legal_twenty_ms_opus_packet_can_exceed_the_old_udp_budget() {
+        ffmpeg::init().unwrap();
+        // RFC 6716 code-3 framing around the genuine F8 FF FE silence
+        // packet: one CELT frame, 545 padding bytes (254 + 254 + 37).
+        // Padding is legal Opus data, not a truncated or concatenated frame.
+        let mut opus = vec![0xFB, 0x41, 255, 255, 37, 0xFF, 0xFE];
+        opus.resize(552, 0);
+        let header = eternal_wire::v2::audio::AudioHeader {
+            session_id: 1,
+            stream_epoch: 1,
+            audio_seq: 0,
+            capture_ts_us: 0,
+            discontinuity: true,
+        };
+        let bytes = header.encode(&opus).unwrap();
+        let (_, payload) = eternal_wire::v2::audio::AudioHeader::decode(&bytes).unwrap();
+        assert_eq!(payload.len(), 552);
+        let mut decoder = decoder();
+        decoder.send_packet(&ffmpeg::Packet::copy(payload)).unwrap();
+        let mut decoded = frame::Audio::empty();
+        decoder.receive_frame(&mut decoded).unwrap();
+        assert_eq!(decoded.samples(), FRAME_SAMPLES);
+        assert_eq!(decoded.channel_layout(), ChannelLayout::STEREO);
+        assert!(decoded.plane::<f32>(0).iter().all(|value| value.abs() < 0.0001));
+    }
+
+    #[test]
     fn tone_silence_transitions_decode_without_a_burst_and_fit_small_datagrams() {
         let mut encoder = OpusEncoder::new(576 - 28).unwrap();
         let mut decoder = decoder();
