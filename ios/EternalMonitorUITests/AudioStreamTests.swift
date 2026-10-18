@@ -25,12 +25,9 @@ final class AudioStreamTests: XCTestCase {
         openSettings(app)
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         setSwitch(toggle, to: "1")
-        app.swipeUp()
-        let audio = app.descendants(matching: .any)["settings.hostAudio"].firstMatch
-        XCTAssertTrue(audio.waitForExistence(timeout: 5))
-        let activeAudio = NSPredicate(format: "value CONTAINS %@", "Opus 128 kbps，缓冲")
-        expectation(for: activeAudio, evaluatedWith: audio)
-        waitForExpectations(timeout: 5)
+        // The microphone section can move diagnostics below the first page.
+        // Scroll to the same status row, then assert its actual live value.
+        waitForAudioStatus(app, containing: "Opus 128 kbps，缓冲")
         capture("audio-host-stream", app: app)
         app.buttons["settings.done"].tap()
         waitForHUD(app, containing: "正在播放电脑声音")
