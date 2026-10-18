@@ -3,6 +3,23 @@ import XCTest
 @testable import EternalMonitor
 
 final class AudioPlayerTests: XCTestCase {
+    private final class CountingOutput: AudioOutputDevice {
+        let entered: XCTestExpectation
+        private let lock = NSLock()
+        private var starts = 0
+        private var stops: [Bool] = []
+        init(entered: XCTestExpectation) { self.entered = entered }
+        func start(pcm: AudioPCMBuffer) throws {
+            lock.lock(); starts += 1; lock.unlock()
+            entered.fulfill()
+        }
+        func stop(deactivate: Bool) { lock.lock(); stops.append(deactivate); lock.unlock() }
+        var snapshot: (starts: Int, stops: [Bool]) {
+            lock.lock(); defer { lock.unlock() }
+            return (starts, stops)
+        }
+    }
+
     private final class BlockingOutput: AudioOutputDevice {
         let entered: XCTestExpectation
         let release = DispatchSemaphore(value: 0)
@@ -91,6 +108,47 @@ final class AudioPlayerTests: XCTestCase {
         XCTAssertEqual(stopped.wait(timeout: .now() + 2), .success)
         XCTAssertEqual(output.stopped.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(player.stats, AudioStats())
+    }
+
+    func testRouteChangesDoNotReleasePlaybackLeaseOwnedByCoordinator() throws {
+        let output = CountingOutput(entered: expectation(description: "speaker lease opened"))
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tone_1khz_20ms",
+            withExtension: "opus", subdirectory: "Fixtures"))
+        player.receive(header: AudioHeader(sessionId: 7, streamEpoch: 1, audioSeq: 1,
+            captureTimestampUs: 20_000, discontinuity: true), opus: try Data(contentsOf: url))
+        wait(for: [output.entered], timeout: 2)
+        let reasons: [AVAudioSession.RouteChangeReason] = [
+            .categoryChange, .override, .routeConfigurationChange, .newDeviceAvailable, .oldDeviceUnavailable
+        ]
+        for reason in reasons {
+            NotificationCenter.default.post(name: AVAudioSession.routeChangeNotification,
+                object: AVAudioSession.sharedInstance(),
+                userInfo: [AVAudioSessionRouteChangeReasonKey: reason.rawValue])
+        }
+        // stop() drains both player/output queues. If the route observer had
+        // released the lease, its extra stops are visible before this returns.
+        player.stop()
+        XCTAssertEqual(output.snapshot.starts, 1)
+        XCTAssertEqual(output.snapshot.stops, [true], "Only the explicit user stop may close this speaker lease")
+    }
+
+    func testActualAudioInterruptionStillClosesPlaybackLease() throws {
+        let output = CountingOutput(entered: expectation(description: "speaker lease opened"))
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tone_1khz_20ms",
+            withExtension: "opus", subdirectory: "Fixtures"))
+        player.receive(header: AudioHeader(sessionId: 7, streamEpoch: 1, audioSeq: 1,
+            captureTimestampUs: 20_000, discontinuity: true), opus: try Data(contentsOf: url))
+        wait(for: [output.entered], timeout: 2)
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue
+            ])
+        player.stop()
+        XCTAssertEqual(output.snapshot.stops, [false, true], "A real interruption must retain its existing stop path")
     }
 }
 

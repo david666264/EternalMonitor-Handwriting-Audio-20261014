@@ -68,20 +68,11 @@ final class AudioPlayer {
                 self.retireTimeline()
             }
         })
-        observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(), queue: nil) { [weak self] notice in
-            // The shared owner has already rebuilt the actual duplex graph
-            // for category changes. Do not reset TTS PCM and trigger another
-            // rebuild in response to our own playback/recording lease change.
-            let reason = (notice.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
-                .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
-            guard reason != .categoryChange else { return }
-            self?.queue.async { [weak self] in
-                // Rebuild the output on the next packet after headphones,
-                // speakers or the hardware sample rate changes.
-                self?.closeOutput(deactivate: false)
-            }
-        })
+        // AudioSessionCoordinator owns hardware route/configuration changes.
+        // A route notification can be caused by enabling VoiceProcessing on
+        // that same engine. Releasing this playback lease in response used
+        // to stop the newly opened microphone, then recreate its I/O unit
+        // again when the next PC audio packet arrived.
     }
 
     deinit {

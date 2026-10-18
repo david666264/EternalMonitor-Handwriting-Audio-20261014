@@ -2,6 +2,11 @@ name: Self-sign IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      microphone_only:
+        description: Run unit and USB/audio regression without repeating unchanged keyboard UI suites
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -78,12 +83,17 @@ jobs:
           EM_SIM_UDID: ${{ steps.sim.outputs.udid }}
           EM_UI_EVIDENCE_DIR: ${{ github.workspace }}/build/e2e/chinese-input
           EM_TEST_STAMP: chinese-input
+          EM_MICROPHONE_ONLY: ${{ inputs.microphone_only }}
         run: |
-          bash scripts/test_ios.sh \
-            -only-testing:EternalMonitorTests \
-            -only-testing:EternalMonitorUITests/ConnectScreenTests \
-            -only-testing:EternalMonitorUITests/KeyboardRelayTests \
-            -only-testing:EternalMonitorUITests/ChineseInputTests
+          if [[ "$EM_MICROPHONE_ONLY" == "true" ]]; then
+            bash scripts/test_ios.sh -only-testing:EternalMonitorTests
+          else
+            bash scripts/test_ios.sh \
+              -only-testing:EternalMonitorTests \
+              -only-testing:EternalMonitorUITests/ConnectScreenTests \
+              -only-testing:EternalMonitorUITests/KeyboardRelayTests \
+              -only-testing:EternalMonitorUITests/ChineseInputTests
+          fi
       - name: Retain keyboard and UI test evidence
         if: always()
         uses: actions/upload-artifact@v4

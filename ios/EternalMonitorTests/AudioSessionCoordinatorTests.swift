@@ -10,11 +10,20 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         var rejectMicrophone = false
         var rejectPlaybackOnly = false
         var rejectMicrophoneOnly = false
-        var onConfigurationChange: ((AnyObject) -> Void)?
+        var onConfigurationChange: ((ObjectIdentifier) -> Void)?
         var engineIdentity = NSObject()
         var running = true
-        func requiresRebuild(afterConfigurationChange object: AnyObject) -> Bool {
-            object === engineIdentity && !running
+        var allowsPlaybackReplacement = false
+        var playbackReplacements = 0
+        var replacedPCM: AudioPCMBuffer?
+        func requiresRebuild(afterConfigurationChange identity: ObjectIdentifier) -> Bool {
+            identity == ObjectIdentifier(engineIdentity) && !running
+        }
+        func replacePlaybackWhileMicrophoneRuns(_ playback: AudioPCMBuffer?) -> Bool {
+            guard allowsPlaybackReplacement, running, plans.last?.microphone == true else { return false }
+            playbackReplacements += 1
+            replacedPCM = playback
+            return true
         }
         func rebuild(playback: AudioPCMBuffer?, microphone: MicrophoneCaptureProcessor?) throws {
             plans.append(Plan(playback: playback != nil, microphone: microphone != nil))
@@ -150,22 +159,22 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         try coordinator.startMicrophone(token: mic, processor: processor())
         let initialPlans = hardware.plans.count
         let oldEngine = hardware.engineIdentity
-        hardware.onConfigurationChange?(oldEngine)
+        hardware.onConfigurationChange?(ObjectIdentifier(oldEngine))
         coordinator.flushPendingHardwareChanges()
         XCTAssertEqual(hardware.plans.count, initialPlans, "A notification alone cannot restart a running graph")
         hardware.running = false
-        hardware.onConfigurationChange?(oldEngine)
+        hardware.onConfigurationChange?(ObjectIdentifier(oldEngine))
         coordinator.flushPendingHardwareChanges()
         XCTAssertEqual(hardware.plans.count, initialPlans + 1)
         XCTAssertTrue(hardware.plans.last?.playback == true)
         XCTAssertTrue(hardware.plans.last?.microphone == true)
-        hardware.onConfigurationChange?(oldEngine)
+        hardware.onConfigurationChange?(ObjectIdentifier(oldEngine))
         coordinator.flushPendingHardwareChanges()
         XCTAssertEqual(hardware.plans.count, initialPlans + 1, "Late notifications from a retired engine are ignored")
         coordinator.stopMicrophone(token: mic)
         coordinator.stopPlayback(token: playback, deactivate: true)
         hardware.running = false
-        hardware.onConfigurationChange?(hardware.engineIdentity)
+        hardware.onConfigurationChange?(ObjectIdentifier(hardware.engineIdentity))
         coordinator.flushPendingHardwareChanges()
         XCTAssertEqual(hardware.plans.count, initialPlans + 2, "No leases means no automatic graph recreation")
     }
@@ -179,11 +188,100 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         try coordinator.startMicrophone(token: UUID(), processor: input)
         hardware.rejectMicrophone = true
         hardware.running = false
-        hardware.onConfigurationChange?(hardware.engineIdentity)
+        hardware.onConfigurationChange?(ObjectIdentifier(hardware.engineIdentity))
         coordinator.flushPendingHardwareChanges()
         XCTAssertEqual(outputFailures, 1)
         XCTAssertEqual(inputFailures, 1)
         XCTAssertEqual(hardware.shutdowns, [true])
         input.stop()
+    }
+
+    func testPlaybackLeaseStartReplacementAndStopPreserveRunningMicrophoneGraph() throws {
+        let hardware = Hardware()
+        hardware.allowsPlaybackReplacement = true
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let mic = UUID(), first = UUID(), second = UUID()
+        let firstPCM = AudioPCMBuffer(), secondPCM = AudioPCMBuffer()
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        let microphoneEngine = hardware.engineIdentity
+        try coordinator.startPlayback(token: first, pcm: firstPCM)
+        try coordinator.startPlayback(token: second, pcm: secondPCM)
+        XCTAssertEqual(hardware.plans.count, 1, "Joining PC audio must not recreate VoiceProcessing IO")
+        XCTAssertTrue(hardware.engineIdentity === microphoneEngine)
+        XCTAssertTrue(hardware.replacedPCM === secondPCM)
+        let replacements = hardware.playbackReplacements
+        coordinator.stopPlayback(token: first, deactivate: true)
+        XCTAssertEqual(hardware.playbackReplacements, replacements, "A retired speaker token cannot mute its replacement")
+        coordinator.stopPlayback(token: second, deactivate: true)
+        XCTAssertNil(hardware.replacedPCM)
+        XCTAssertEqual(hardware.plans.count, 1, "Muting PC audio must keep microphone input alive")
+        XCTAssertTrue(hardware.shutdowns.isEmpty)
+        coordinator.stopMicrophone(token: mic)
+        XCTAssertEqual(hardware.shutdowns, [true], "Explicit mic-off with no speaker lease still releases recording")
+    }
+
+    func testStoppedMicrophoneGraphCannotUsePlaybackSlotShortcut() throws {
+        let hardware = Hardware()
+        hardware.allowsPlaybackReplacement = true
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let mic = UUID(), playback = UUID()
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        hardware.running = false
+        try coordinator.startPlayback(token: playback, pcm: AudioPCMBuffer())
+        XCTAssertEqual(hardware.playbackReplacements, 0)
+        XCTAssertEqual(hardware.plans.count, 2, "A stopped graph needs real hardware recovery")
+        XCTAssertTrue(hardware.plans.last?.microphone == true)
+        XCTAssertTrue(hardware.plans.last?.playback == true)
+        coordinator.stopPlayback(token: playback, deactivate: false)
+        coordinator.stopMicrophone(token: mic)
+    }
+
+    func testConfigurationNotificationDoesNotRetainRetiredEngineWhileReplacementStarts() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let mic = UUID()
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        weak var retiredEngine: NSObject? = hardware.engineIdentity
+        let identity = ObjectIdentifier(hardware.engineIdentity)
+        hardware.running = false
+        hardware.onConfigurationChange?(identity)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertNil(retiredEngine, "The queued identity must not keep an old VoiceProcessing engine alive")
+        coordinator.stopMicrophone(token: mic)
+    }
+}
+
+final class AudioPlaybackSlotTests: XCTestCase {
+    func testReplacingAndClearingPlaybackRendersOnlyCurrentStereoPCM() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+        buffer.frameLength = 960
+        let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        let channels = try XCTUnwrap(buffer.floatChannelData)
+        let slot = AudioPlaybackSlot()
+        XCTAssertFalse(slot.render(frames: 960, buffers: buffers, nowUs: 0))
+        XCTAssertEqual(channels[0][0], 0)
+        var first: AudioPCMBuffer? = AudioPCMBuffer()
+        let second = AudioPCMBuffer()
+        weak var retiredPCM: AudioPCMBuffer? = first
+        for _ in 0..<3 {
+            first?.append([Float](repeating: 0.1, count: 1920))
+            second.append([Float](repeating: 0.2, count: 1920))
+        }
+        slot.replace(first)
+        XCTAssertTrue(slot.render(frames: 960, buffers: buffers, nowUs: 20_000))
+        XCTAssertEqual(channels[0][0], 0.1)
+        XCTAssertEqual(channels[1][959], 0.1)
+        slot.replace(second)
+        first = nil
+        XCTAssertNil(retiredPCM, "The source slot cannot retain old audio after a lease replacement")
+        XCTAssertTrue(slot.render(frames: 960, buffers: buffers, nowUs: 40_000))
+        XCTAssertEqual(channels[0][0], 0.2)
+        XCTAssertEqual(channels[1][959], 0.2)
+        slot.replace(nil)
+        XCTAssertFalse(slot.render(frames: 960, buffers: buffers, nowUs: 60_000))
+        for channel in 0..<2 {
+            XCTAssertTrue((0..<960).allSatisfy { channels[channel][$0] == 0 }, "Muted output must contain no old PCM")
+        }
     }
 }
