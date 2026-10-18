@@ -1,5 +1,6 @@
 //! Session-scoped, USB-only iPad microphone forwarding to a local ASR client.
-//! No endpoint is opened and no system recording-device preference is changed.
+//! An optional Windows virtual microphone sink shares the same authorized PCM.
+//! No system recording-device preference is changed.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -145,6 +146,10 @@ pub struct MicrophoneBridge {
     active: Option<ActiveMicrophone>,
     sink: Option<BridgeSink>,
     failed_session: Option<(PeerId, u32)>,
+    #[cfg(windows)]
+    system: Option<super::system_microphone::SystemMicrophone>,
+    #[cfg(windows)]
+    system_attempted: bool,
 }
 impl Default for MicrophoneBridge {
     fn default() -> Self {
@@ -153,7 +158,10 @@ impl Default for MicrophoneBridge {
 }
 impl MicrophoneBridge {
     fn new(config_path: Option<PathBuf>) -> Self {
-        Self { config_path, active: None, sink: None, failed_session: None }
+        Self { config_path, active: None, sink: None, failed_session: None,
+            #[cfg(windows)] system: None,
+            #[cfg(windows)] system_attempted: false,
+        }
     }
 
     /// Call only after Session::accept_microphone validates the live HELLO.
@@ -195,6 +203,23 @@ impl MicrophoneBridge {
         active.last_seq = Some(header.mic_seq);
         active.capture_ts_us = header.capture_ts_us;
         active.open = !header.end;
+        // This branch receives only the same validated, current USB session
+        // accepted by the private UDP sink. It never opens a second receiver
+        // or blocks video/input on a Windows audio driver call.
+        #[cfg(windows)]
+        if header.end {
+            self.system = None;
+            self.system_attempted = false;
+        } else {
+            if !self.system_attempted {
+                self.system_attempted = true;
+                match super::system_microphone::SystemMicrophone::new() {
+                    Ok(sink) => self.system = Some(sink),
+                    Err(error) => warn!(%error, "Windows microphone worker could not start; private bridge remains active"),
+                }
+            }
+            if let Some(system) = &self.system { system.push(pcm); }
+        }
         true
     }
 
@@ -202,6 +227,11 @@ impl MicrophoneBridge {
     /// header-only end packet before dropping local state. No stream resumes
     /// automatically after reconnect, and stale sequence IDs cannot leak in.
     pub fn finish(&mut self) {
+        #[cfg(windows)]
+        {
+            self.system = None;
+            self.system_attempted = false;
+        }
         if let (Some(active), Some(sink)) = (&self.active, &self.sink) {
             if active.open {
                 let _ = sink.send(MicrophoneHeader { session_id: active.session_id,
