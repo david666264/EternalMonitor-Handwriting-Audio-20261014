@@ -88,6 +88,10 @@ final class MediaDatagrams {
             let expected = acceptedSessionId.withLock { $0 }
             guard expected != 0, header.sessionId == expected else { return }
             onAudioPacket?(header, data.subdata(in: payloadRange))
+        case .microphone:
+            // Uplink-only. Never interpret a host packet as local capture or
+            // loop it back into the speaker/ASR path.
+            break
         case .legacyHello:
             // The host never sends this; ignore.
             break

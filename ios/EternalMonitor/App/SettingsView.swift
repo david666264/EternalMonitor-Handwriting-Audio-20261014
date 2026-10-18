@@ -65,6 +65,8 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Theme.surfaceRaised)
 
+                MicrophoneSettingsSection(controller: connectionManager.microphone)
+
                 Section {
                     Toggle(isOn: $settings.controlPC) {
                         rowLabel("控制电脑", "hand.point.up.left")

@@ -63,7 +63,13 @@ final class AudioPlayer {
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(), queue: nil) { [weak self] _ in
+            object: AVAudioSession.sharedInstance(), queue: nil) { [weak self] notice in
+            // The shared owner has already rebuilt the actual duplex graph
+            // for category changes. Do not reset TTS PCM and trigger another
+            // rebuild in response to our own playback/recording lease change.
+            let reason = (notice.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
+                .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            guard reason != .categoryChange else { return }
             self?.queue.async { [weak self] in
                 // Rebuild the output on the next packet after headphones,
                 // speakers or the hardware sample rate changes.

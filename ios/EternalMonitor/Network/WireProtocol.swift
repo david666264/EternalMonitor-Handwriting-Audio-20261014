@@ -19,6 +19,7 @@ enum Wire {
         case media = 0x01
         case mediaFec = 0x02
         case audio = 0x03
+        case microphone = 0x04
         case hello2 = 0x10
         case helloAck = 0x11
         case heartbeat = 0x12
@@ -36,6 +37,7 @@ enum Wire {
     enum Classification: Equatable {
         case media(flags: UInt8)
         case audio(flags: UInt8)
+        case microphone(flags: UInt8)
         case control(PacketType)
         case legacyHello
         case unknown
@@ -58,6 +60,8 @@ enum Wire {
                 return .media(flags: raw[4])
             case .audio:
                 return .audio(flags: raw[4])
+            case .microphone:
+                return .microphone(flags: raw[4])
             default:
                 return .control(type)
             }
@@ -253,6 +257,7 @@ struct Hello2: Equatable {
     static let featureWantsInput: UInt16 = 1 << 0
     static let featureWantsAudio: UInt16 = 1 << 1
     static let featureSupportsNack: UInt16 = 1 << 2
+    static let featureWantsMicrophone: UInt16 = 1 << 3
     static let maxNameLength = 64
 
     var protoMin: UInt8 = 2
@@ -288,6 +293,7 @@ struct HelloAck: Equatable {
     static let hostCapUSB: UInt16 = 1 << 2
     static let hostCapKeyboard: UInt16 = 1 << 3
     static let hostCapPen: UInt16 = 1 << 4
+    static let hostCapMicrophone: UInt16 = 1 << 5
     var status: HelloStatus
     var acceptedVersion: UInt8
     var clientNonce: UInt32
@@ -604,7 +610,7 @@ extension Wire {
             message = .streamConfig(cfg)
         case .inputEvent:
             message = parseInputEvent(&r)
-        case .media, .mediaFec, .audio, .error:
+        case .media, .mediaFec, .audio, .microphone, .error:
             return nil
         }
         guard let message else { return nil }

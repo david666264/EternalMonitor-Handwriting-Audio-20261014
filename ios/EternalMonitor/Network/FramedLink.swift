@@ -92,6 +92,22 @@ final class FramedLink: MediaLink {
         enqueue(datagrams, completion: completion)
     }
 
+    /// Live audio is expendable under congestion. Unlike reliable keyboard
+    /// input, it must never fill the USB queue or close a healthy video link.
+    /// The sender allows one frame in flight; this guard executes on the same
+    /// queue as enqueue, so no other writer can consume the checked budget.
+    func sendMicrophoneBatch(_ datagrams: [Data], completion: @escaping (Bool) -> Void) {
+        let write = { [self] in
+            guard datagrams.count == 1, let packet = datagrams.first,
+                  MicrophoneHeader.decode(packet) != nil, connection != nil,
+                  pendingSendBytes + packet.count + 4 <= min(Self.maximumPendingBytes, 32 * 1024)
+            else { completion(false); return }
+            sendBatch(datagrams, completion: completion)
+        }
+        if DispatchQueue.getSpecific(key: queueKey) != nil { write() }
+        else { queue.async(execute: write) }
+    }
+
     private func enqueue(_ datagrams: [Data], completion: ((Bool) -> Void)?) {
         let write = { [self] in
             guard connection != nil else { completion?(false); return }

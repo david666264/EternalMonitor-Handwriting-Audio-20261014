@@ -294,6 +294,8 @@ struct DisplayView: View {
                 .accessibilityIdentifier("display.keyboard")
             }
 
+            MicrophoneToolbarButton(controller: connectionManager.microphone)
+
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 15, weight: .medium))

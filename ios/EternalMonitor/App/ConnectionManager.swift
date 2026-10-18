@@ -70,6 +70,7 @@ private struct ConnectionDebugState {
 final class ConnectionManager: ObservableObject {
     /// Local input survives a view rebuild during automatic reconnection.
     let keyboardDraft = KeyboardDraftStore()
+    let microphone = MicrophoneRelayController()
     @Published var state: ConnectionState = .disconnected
     @Published var fps: Double = 0
     @Published var transportMode: String = "WiFi"
@@ -277,6 +278,13 @@ final class ConnectionManager: ObservableObject {
             }
         }
         let isUSB = receiver.isUSB
+        let wantsMicrophone = isUSB && microphone.enabled
+        microphone.onNeedsReconnect = { [weak self] in
+            guard let self, self.mediaLink?.isUSB == true, self.state != .disconnected else { return }
+            // HELLO feature bits belong to a session. The USB listener remains
+            // available so the host can open the replacement connection.
+            self.disconnect(reason: .superseded)
+        }
         let pairingAddress = isUSB ? "USB" : PairingStore.address(host: normalizedHost, port: port)
         let pairingToken = explicitPairingToken ?? ((try? pairingStore.token(address: pairingAddress)) ?? Data(repeating: 0, count: 16))
         explicitPairingToken = nil
@@ -460,6 +468,11 @@ final class ConnectionManager: ObservableObject {
                 self.livenessTimeoutUs = UInt64(info.livenessTimeoutMs) * 1000
                 self.reconnectAttempt = 0
                 self.hostInfo = info
+                self.microphone.configureSession(sessionId: info.sessionId, isUSB: isUSB,
+                    hostCaps: info.hostCaps, requested: wantsMicrophone, sendBatch: { [weak receiver] packets, done in
+                        guard let link = receiver as? FramedLink else { done(false); return }
+                        link.sendMicrophoneBatch(packets, completion: done)
+                    })
                 if self.awaitingPairing {
                     self.awaitingPairing = false
                     self.pairingPrompt = nil
@@ -563,7 +576,8 @@ final class ConnectionManager: ObservableObject {
             refreshHz: UInt8(clamping: screen.maximumFramesPerSecond),
             decoderCaps: Hello2.capDecodeH264 | Hello2.capDecodeHEVC,
             featureCaps: (wantsInput ? Hello2.featureWantsInput : 0)
-                | (wantsAudio ? Hello2.featureWantsAudio : 0) | (isUSB ? 0 : Hello2.featureSupportsNack),
+                | (wantsAudio ? Hello2.featureWantsAudio : 0)
+                | (wantsMicrophone ? Hello2.featureWantsMicrophone : 0) | (isUSB ? 0 : Hello2.featureSupportsNack),
             deviceId: DeviceIdentity.load(),
             preferredFPS: drawing.preferredFPS(UserDefaults.standard.frameRatePreference(), maximum: screen.maximumFramesPerSecond),
             authToken: pairingToken
@@ -821,6 +835,7 @@ final class ConnectionManager: ObservableObject {
     /// The app is leaving the foreground: say goodbye so the host stops
     /// streaming promptly instead of waiting out its liveness window.
     func handleAppBackgrounded() {
+        microphone.stopSession(backgrounded: true)
         isForeground = false
         usbListener?.stop()
         usbListener = nil
@@ -837,6 +852,7 @@ final class ConnectionManager: ObservableObject {
 
     /// Resume the session that backgrounding interrupted (opt-out toggle).
     func handleAppForegrounded() {
+        microphone.handleForeground()
         isForeground = true
         usbPaused = false
         refreshUSBAvailability()
@@ -851,6 +867,7 @@ final class ConnectionManager: ObservableObject {
     }
 
     func disconnect(reason: ByeReason = .userDisconnect) {
+        microphone.stopSession()
         awaitingPairing = false
         pairingPrompt = nil
         currentAttempt.withLock { $0 = nil }
