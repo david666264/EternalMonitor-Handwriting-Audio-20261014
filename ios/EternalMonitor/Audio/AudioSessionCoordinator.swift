@@ -13,19 +13,19 @@ final class AudioSessionCoordinator: @unchecked Sendable {
     static let shared = AudioSessionCoordinator()
     private let queue = DispatchQueue(label: "EternalMonitor.audio.session", qos: .userInitiated)
     private let hardware: DuplexAudioHardware
-    private var playback: (token: UUID, pcm: AudioPCMBuffer)?
+    private var playback: (token: UUID, pcm: AudioPCMBuffer, onFailure: ((Error) -> Void)?)?
     private var microphone: (token: UUID, processor: MicrophoneCaptureProcessor)?
 
     init(hardware: DuplexAudioHardware? = nil) { self.hardware = hardware ?? NativeDuplexAudioHardware() }
 
-    func startPlayback(token: UUID, pcm: AudioPCMBuffer) throws {
+    func startPlayback(token: UUID, pcm: AudioPCMBuffer, onFailure: ((Error) -> Void)? = nil) throws {
         try queue.sync {
             let previous = playback
-            playback = (token, pcm)
+            playback = (token, pcm, onFailure)
             do { try rebuild() }
             catch {
                 playback = previous
-                try? rebuild()
+                rebuildRemainingOrReportFailure()
                 throw error
             }
         }
@@ -38,7 +38,7 @@ final class AudioSessionCoordinator: @unchecked Sendable {
                 return
             }
             playback = nil
-            if microphone != nil { try? rebuild() }
+            if microphone != nil { rebuildRemainingOrReportFailure() }
             else { hardware.shutdown(deactivate: deactivate) }
         }
     }
@@ -52,7 +52,7 @@ final class AudioSessionCoordinator: @unchecked Sendable {
                 microphone = previous
                 // AEC/recording failure must leave an existing speaker lease
                 // usable; raw, unprocessed microphone is never a fallback.
-                try? rebuild()
+                rebuildRemainingOrReportFailure()
                 throw error
             }
         }
@@ -62,7 +62,7 @@ final class AudioSessionCoordinator: @unchecked Sendable {
         queue.sync {
             guard microphone?.token == token else { return }
             microphone = nil
-            if playback != nil { try? rebuild() }
+            if playback != nil { rebuildRemainingOrReportFailure() }
             else { hardware.shutdown(deactivate: true) }
         }
     }
@@ -70,6 +70,18 @@ final class AudioSessionCoordinator: @unchecked Sendable {
     private func rebuild() throws {
         if playback == nil, microphone == nil { hardware.shutdown(deactivate: true) }
         else { try hardware.rebuild(playback: playback?.pcm, microphone: microphone?.processor) }
+    }
+
+    /// A lease is a request, not proof that a hardware graph survived. Notify
+    /// whichever consumer remains if its rebuild fails; their existing stop
+    /// paths release the same lease. Never silently retain a dead graph.
+    private func rebuildRemainingOrReportFailure() {
+        do { try rebuild() }
+        catch {
+            hardware.shutdown(deactivate: true)
+            playback?.onFailure?(error)
+            microphone?.processor.fail()
+        }
     }
 }
 

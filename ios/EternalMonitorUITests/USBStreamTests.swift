@@ -51,8 +51,7 @@ final class USBStreamTests: XCTestCase {
         assertAudio("正在播放电脑声音", app: app)
         capture("usb-drawing-audio-playing", app: app)
 
-        showDrawingControls(app, showing: app.buttons["display.settings"])
-        app.buttons["display.settings"].tap()
+        openSettings(app)
         let toggle = app.switches["settings.playPCaudio"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         XCTAssertEqual(toggle.value as? String, "1")
@@ -67,8 +66,7 @@ final class USBStreamTests: XCTestCase {
         XCTAssertFalse(app.textFields["connect.host"].exists)
         capture("usb-drawing-audio-muted", app: app)
 
-        showDrawingControls(app, showing: app.buttons["display.settings"])
-        app.buttons["display.settings"].tap()
+        openSettings(app)
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).press(forDuration: 0.15)
         let unmuted = NSPredicate(format: "value == %@", "1")
@@ -88,8 +86,7 @@ final class USBStreamTests: XCTestCase {
         assertTransport("USB", app: app)
         XCTAssertTrue(app.buttons["display.drawingControls"].exists)
         assertAudio("电脑声音已静音或不可用", app: app)
-        showDrawingControls(app, showing: app.buttons["display.settings"])
-        app.buttons["display.settings"].tap()
+        openSettings(app)
         let toggle = app.switches["settings.playPCaudio"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         XCTAssertEqual(toggle.value as? String, "0", "Drawing must not force audio on")
@@ -147,6 +144,40 @@ final class USBStreamTests: XCTestCase {
     private func showDrawingControls(_ app: XCUIApplication, showing element: XCUIElement) {
         let drawingControls = app.buttons["display.drawingControls"]
         if !element.exists && drawingControls.exists { drawingControls.tap() }
+    }
+
+    private func openSettings(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let settings = app.buttons["display.settings"]
+        let drawingControls = app.buttons["display.drawingControls"]
+        XCTAssertTrue(drawingControls.waitForExistence(timeout: 5), file: file, line: line)
+        // Earlier transport/audio assertions and screenshots can consume the
+        // entire five-second HUD lifetime. An `exists` snapshot just before
+        // tap is not a lifetime lease: the button can disappear while XCTest
+        // waits for idle. First establish a hidden state, then reopen a fresh
+        // HUD and interact within its full lifetime. If the timer races our
+        // first toggle, verify the state and toggle again rather than guess.
+        let hidden = NSPredicate(format: "exists == false")
+        var confirmedHidden = !settings.exists
+        for _ in 0..<3 where !confirmedHidden {
+            drawingControls.tap()
+            confirmedHidden = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: hidden, object: settings)],
+                timeout: 1) == .completed
+        }
+        guard confirmedHidden else {
+            capture("usb-settings-could-not-hide-hud", app: app)
+            XCTFail("Could not establish a hidden HUD before opening Settings", file: file, line: line)
+            return
+        }
+        drawingControls.tap()
+        let visible = NSPredicate(format: "exists == true AND hittable == true")
+        guard XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: visible, object: settings)],
+            timeout: 3) == .completed else {
+            capture("usb-settings-could-not-show-hud", app: app)
+            XCTFail("Settings did not become tappable in a fresh HUD", file: file, line: line)
+            return
+        }
+        settings.tap()
+        XCTAssertTrue(app.switches["settings.playPCaudio"].waitForExistence(timeout: 5), file: file, line: line)
     }
 
     private func cable(_ command: String) {

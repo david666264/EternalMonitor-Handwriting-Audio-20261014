@@ -44,6 +44,12 @@ final class AudioPlayer {
 
     init(output: AudioOutputDevice = AudioOutput()) {
         self.output = output
+        output.setGraphFailureHandler { [weak self] error in
+            // A remaining speaker lease can fail while the microphone is
+            // being stopped/reconfigured. Report that same output failure on
+            // the player's queue instead of leaving its UI falsely playing.
+            self?.queue.async { [weak self] in self?.fail(error) }
+        }
         queue.setSpecific(key: queueKey, value: true)
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(5), leeway: .milliseconds(1))

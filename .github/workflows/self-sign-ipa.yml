@@ -92,6 +92,7 @@ jobs:
           path: |
             build/e2e/chinese-input/
             build/ios-ui-host-chinese-input.log
+            build/ios-ui-input-chinese-input.trace
           if-no-files-found: error
           retention-days: 7
 

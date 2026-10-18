@@ -8,9 +8,13 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         var plans: [Plan] = []
         var shutdowns: [Bool] = []
         var rejectMicrophone = false
+        var rejectPlaybackOnly = false
+        var rejectMicrophoneOnly = false
         func rebuild(playback: AudioPCMBuffer?, microphone: MicrophoneCaptureProcessor?) throws {
             plans.append(Plan(playback: playback != nil, microphone: microphone != nil))
             if rejectMicrophone, microphone != nil { throw MicrophoneAudioError.unavailable }
+            if rejectPlaybackOnly, playback != nil, microphone == nil { throw MicrophoneAudioError.unavailable }
+            if rejectMicrophoneOnly, microphone != nil, playback == nil { throw MicrophoneAudioError.unavailable }
         }
         func shutdown(deactivate: Bool) { shutdowns.append(deactivate) }
     }
@@ -91,5 +95,39 @@ final class AudioSessionCoordinatorTests: XCTestCase {
             processor.offer(buffer, timestampUs: UInt64(index * 20_000))
         }
         wait(for: [received], timeout: 3)
+    }
+
+    func testStoppingMicReportsADeadRemainingPlaybackGraphThroughOutputAdapter() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let output: AudioOutputDevice = AudioOutput(coordinator: coordinator)
+        var failures = 0
+        output.setGraphFailureHandler { _ in failures += 1 }
+        try output.start(pcm: AudioPCMBuffer())
+        let mic = UUID()
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        hardware.rejectPlaybackOnly = true
+        coordinator.stopMicrophone(token: mic)
+        XCTAssertEqual(failures, 1, "A failed playback rebuild must reach the player's failure handler")
+        XCTAssertEqual(hardware.shutdowns, [true])
+        output.stop(deactivate: true)
+    }
+
+    func testStoppingPlaybackReportsADeadRemainingCaptureGraphOnlyOnce() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let playback = UUID(), mic = UUID()
+        var failures = 0
+        let processor = MicrophoneCaptureProcessor(onPCM: { _, _ in }, onError: { failures += 1 })
+        try coordinator.startPlayback(token: playback, pcm: AudioPCMBuffer())
+        try coordinator.startMicrophone(token: mic, processor: processor)
+        hardware.rejectMicrophoneOnly = true
+        coordinator.stopPlayback(token: playback, deactivate: true)
+        XCTAssertEqual(failures, 1, "Capture must stop advertising a working source after its graph failed")
+        XCTAssertEqual(hardware.shutdowns, [true])
+        processor.fail()
+        XCTAssertEqual(failures, 1, "Repeated failure delivery cannot create a restart/error loop")
+        coordinator.stopMicrophone(token: mic)
+        processor.stop()
     }
 }

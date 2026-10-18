@@ -324,10 +324,46 @@ pub mod recorder {
 
 fn log_injections(injections: &[Injection]) {
     if std::env::var("ETERNAL_INPUT_RECORDER_LOG").is_ok_and(|value| value == "1") {
+        record_injection_trace(injections);
         for injection in injections {
             tracing::info!(command = ?injection, "Input injection");
         }
     }
+}
+
+/// The bounded, lossy product log is not an input-delivery oracle. The UI
+/// fixture explicitly opts into this separate lossless trace, written only
+/// after actual injection (or its non-Windows recorder). No file is opened
+/// and no synchronous IO is added unless both recorder variables are set.
+fn record_injection_trace(injections: &[Injection]) {
+    use std::io::{BufWriter, Write};
+    static TRACE: once_cell::sync::Lazy<std::sync::Mutex<Option<BufWriter<std::fs::File>>>> =
+        once_cell::sync::Lazy::new(|| {
+            let file = std::env::var_os("ETERNAL_INPUT_RECORDER_FILE").and_then(|path| {
+                match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    Ok(file) => Some(BufWriter::new(file)),
+                    Err(_) => {
+                        eprintln!("Could not open the explicit input-recorder trace");
+                        None
+                    }
+                }
+            });
+            std::sync::Mutex::new(file)
+        });
+    let mut trace = TRACE.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(writer) = trace.as_mut() {
+        if write_injection_trace(writer, injections).and_then(|_| writer.flush()).is_err() {
+            // A failed oracle must fail the strict fixture rather than
+            // silently falling back to the lossy diagnostic log.
+            eprintln!("The explicit input-recorder trace stopped writing");
+            *trace = None;
+        }
+    }
+}
+
+fn write_injection_trace(writer: &mut impl std::io::Write, injections: &[Injection]) -> std::io::Result<()> {
+    for injection in injections { writeln!(writer, "Input injection command={injection:?}")?; }
+    Ok(())
 }
 
 /// The transport's per-connection relay state: an edge deduper scoped to the
@@ -579,6 +615,19 @@ fn current_virtual_screen(output: CaptureGeometry) -> VirtualScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_input_trace_keeps_more_than_the_lossy_log_capacity_in_exact_order() {
+        let expected: Vec<_> = (0..1350).map(Injection::Unicode).collect();
+        let mut trace = Vec::new();
+        for batch in expected.chunks(128) { write_injection_trace(&mut trace, batch).unwrap(); }
+        let actual = String::from_utf8(trace).unwrap();
+        let lines: Vec<_> = actual.lines().collect();
+        assert_eq!(lines.len(), expected.len());
+        for (line, command) in lines.into_iter().zip(expected) {
+            assert_eq!(line, format!("Input injection command={command:?}"));
+        }
+    }
 
     fn event(kind: u8, phase: u8, x: u16, y: u16) -> InputEvent {
         InputEvent {

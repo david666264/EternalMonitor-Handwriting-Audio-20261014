@@ -91,6 +91,15 @@ final class MicrophoneCaptureProcessor: @unchecked Sendable {
         lock.lock(); accepting = false; pending.removeAll(); lock.unlock()
     }
 
+    func fail() {
+        lock.lock()
+        let notify = accepting
+        accepting = false
+        pending.removeAll()
+        lock.unlock()
+        if notify { onError() }
+    }
+
     func stop() {
         stopAccepting()
         queue.sync { converter = nil; inputFormat = nil; accumulator.reset() }
@@ -108,8 +117,7 @@ final class MicrophoneCaptureProcessor: @unchecked Sendable {
             lock.unlock()
             do { try convert(item) }
             catch {
-                stopAccepting()
-                onError()
+                fail()
                 return
             }
         }

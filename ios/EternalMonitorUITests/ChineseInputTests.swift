@@ -10,7 +10,9 @@ final class ChineseInputTests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        logPath = try XCTUnwrap(ProcessInfo.processInfo.environment["EM_INPUT_HOST_LOG"])
+        // stdout is deliberately a bounded lossy production log. Long-text
+        // delivery is asserted against the host's explicit lossless recorder.
+        logPath = try XCTUnwrap(ProcessInfo.processInfo.environment["EM_INPUT_RECORDER_FILE"])
         logOffset = (try? Data(contentsOf: URL(fileURLWithPath: logPath)).count) ?? 0
     }
 
