@@ -1,9 +1,17 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
 
 protocol DuplexAudioHardware: AnyObject {
+    var onConfigurationChange: ((AnyObject) -> Void)? { get set }
+    func requiresRebuild(afterConfigurationChange object: AnyObject) -> Bool
     func rebuild(playback: AudioPCMBuffer?, microphone: MicrophoneCaptureProcessor?) throws
     func shutdown(deactivate: Bool)
+}
+
+extension DuplexAudioHardware {
+    var onConfigurationChange: ((AnyObject) -> Void)? { get { nil } set {} }
+    func requiresRebuild(afterConfigurationChange object: AnyObject) -> Bool { false }
 }
 
 /// The only AVAudioSession/AVAudioEngine owner. Playback and microphone have
@@ -16,7 +24,22 @@ final class AudioSessionCoordinator: @unchecked Sendable {
     private var playback: (token: UUID, pcm: AudioPCMBuffer, onFailure: ((Error) -> Void)?)?
     private var microphone: (token: UUID, processor: MicrophoneCaptureProcessor)?
 
-    init(hardware: DuplexAudioHardware? = nil) { self.hardware = hardware ?? NativeDuplexAudioHardware() }
+    init(hardware: DuplexAudioHardware? = nil) {
+        let hardware = hardware ?? NativeDuplexAudioHardware()
+        self.hardware = hardware
+        hardware.onConfigurationChange = { [weak self] object in
+            // Apple posts on an internal audio queue. Never tear down an
+            // engine there: enqueue its identity and inspect it on our owner.
+            self?.queue.async { [weak self] in
+                guard let self, self.playback != nil || self.microphone != nil,
+                      self.hardware.requiresRebuild(afterConfigurationChange: object) else { return }
+                self.rebuildRemainingOrReportFailure()
+            }
+        }
+    }
+
+    /// Also makes queued hardware notifications observable in unit tests.
+    func flushPendingHardwareChanges() { queue.sync {} }
 
     func startPlayback(token: UUID, pcm: AudioPCMBuffer, onFailure: ((Error) -> Void)? = nil) throws {
         try queue.sync {
@@ -98,9 +121,31 @@ enum MicrophoneAudioError: LocalizedError {
 /// Playback and capture must share the actual I/O engine for Apple's voice
 /// processor to receive the PC/TTS render reference used by echo cancellation.
 private final class NativeDuplexAudioHardware: DuplexAudioHardware {
+    var onConfigurationChange: ((AnyObject) -> Void)?
     private var engine: AVAudioEngine?
     private var tapInstalled = false
     private var active = false
+    private var configurationObserver: NSObjectProtocol?
+    private let logger = Logger(subsystem: "com.eternal.monitor", category: "microphone")
+
+    init() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil
+        ) { [weak self] notification in
+            guard let object = notification.object else { return }
+            self?.onConfigurationChange?(object as AnyObject)
+        }
+    }
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+    }
+
+    func requiresRebuild(afterConfigurationChange object: AnyObject) -> Bool {
+        guard let changed = object as? AVAudioEngine, changed === engine, !changed.isRunning else { return false }
+        logger.notice("Current audio engine stopped after hardware configuration changed; rebuilding active leases")
+        return true
+    }
 
     func rebuild(playback: AudioPCMBuffer?, microphone: MicrophoneCaptureProcessor?) throws {
         shutdown(deactivate: false)
@@ -115,7 +160,10 @@ private final class NativeDuplexAudioHardware: DuplexAudioHardware {
         }
         if session.preferredSampleRate != 48_000 { try session.setPreferredSampleRate(48_000) }
         if abs(session.preferredIOBufferDuration - 0.01) > 0.0001 { try session.setPreferredIOBufferDuration(0.01) }
-        if !active { try session.setActive(true) }
+        // An interruption or media service can deactivate the real session
+        // without changing our bookkeeping. This call is idempotent while
+        // active; the cached flag only controls our eventual deactivation.
+        try session.setActive(true)
         active = true
         let output = AVAudioEngine()
         do {
@@ -147,10 +195,14 @@ private final class NativeDuplexAudioHardware: DuplexAudioHardware {
             output.connect(source, to: output.mainMixerNode, format: format)
             if let microphone {
                 let input = output.inputNode
+                let hardwareFormat = input.inputFormat(forBus: 0)
                 let inputFormat = input.outputFormat(forBus: 0)
-                guard inputFormat.channelCount > 0, (8_000...192_000).contains(inputFormat.sampleRate) else {
+                guard session.isInputAvailable, hardwareFormat.channelCount > 0,
+                      (8_000...192_000).contains(hardwareFormat.sampleRate),
+                      inputFormat.channelCount > 0, (8_000...192_000).contains(inputFormat.sampleRate) else {
                     throw MicrophoneAudioError.unavailable
                 }
+                logger.info("Microphone formats hardware=\(hardwareFormat.sampleRate)Hz/\(hardwareFormat.channelCount)ch tap=\(inputFormat.sampleRate)Hz/\(inputFormat.channelCount)ch")
                 input.installTap(onBus: 0, bufferSize: 960, format: inputFormat) { [weak microphone] buffer, _ in
                     let now = ControlChannel.clientNowUs()
                     let duration = UInt64(Double(buffer.frameLength) / buffer.format.sampleRate * 1_000_000)

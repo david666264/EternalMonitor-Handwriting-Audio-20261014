@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
 
 protocol MicrophoneCaptureDeviceProtocol: AnyObject {
     func start(onPCM: @escaping (Data, UInt64) -> Void, onError: @escaping () -> Void,
@@ -42,6 +43,13 @@ final class MicrophoneCaptureDevice: MicrophoneCaptureDeviceProtocol {
 /// worker. AVAudioConverter and packetization run off the realtime I/O thread.
 final class MicrophoneCaptureProcessor: @unchecked Sendable {
     static let maximumQueuedBuffers = 3
+    struct Snapshot {
+        var tapBuffers: UInt64 = 0
+        var rejectedBuffers: UInt64 = 0
+        var convertedBuffers: UInt64 = 0
+        var convertedSamples: UInt64 = 0
+        var emittedFrames: UInt64 = 0
+    }
     private struct Item { let buffer: AVAudioPCMBuffer; let timestampUs: UInt64; let reset: Bool }
     private let lock = NSLock()
     private var accepting = true
@@ -53,16 +61,23 @@ final class MicrophoneCaptureProcessor: @unchecked Sendable {
     private var accumulator = MicrophoneFrameAccumulator()
     private let onPCM: (Data, UInt64) -> Void
     private let onError: () -> Void
+    private var counters = Snapshot()
+    private let logger = Logger(subsystem: "com.eternal.monitor", category: "microphone")
 
     init(onPCM: @escaping (Data, UInt64) -> Void, onError: @escaping () -> Void) {
         self.onPCM = onPCM; self.onError = onError
     }
 
     func offer(_ buffer: AVAudioPCMBuffer, timestampUs: UInt64) {
-        guard buffer.frameLength > 0, buffer.frameLength <= 8192,
-              buffer.format.channelCount > 0, buffer.format.channelCount <= 8 else { return }
         lock.lock()
         guard accepting else { lock.unlock(); return }
+        counters.tapBuffers &+= 1
+        guard buffer.frameLength > 0, buffer.frameLength <= 8192,
+              buffer.format.channelCount > 0, buffer.format.channelCount <= 8 else {
+            counters.rejectedBuffers &+= 1
+            lock.unlock()
+            return
+        }
         if pending.count == Self.maximumQueuedBuffers {
             pending.removeFirst()
             let first = pending[0]
@@ -94,15 +109,23 @@ final class MicrophoneCaptureProcessor: @unchecked Sendable {
     func fail() {
         lock.lock()
         let notify = accepting
+        let counts = counters
         accepting = false
         pending.removeAll()
         lock.unlock()
-        if notify { onError() }
+        if notify {
+            logger.error("Microphone conversion/capture failed tap_buffers=\(counts.tapBuffers) rejected=\(counts.rejectedBuffers) converted_buffers=\(counts.convertedBuffers) emitted_frames=\(counts.emittedFrames)")
+            onError()
+        }
     }
+
+    var snapshot: Snapshot { lock.lock(); defer { lock.unlock() }; return counters }
 
     func stop() {
         stopAccepting()
         queue.sync { converter = nil; inputFormat = nil; accumulator.reset() }
+        let counts = snapshot
+        logger.info("Microphone stopped tap_buffers=\(counts.tapBuffers) rejected=\(counts.rejectedBuffers) converted_buffers=\(counts.convertedBuffers) converted_samples=\(counts.convertedSamples) emitted_frames=\(counts.emittedFrames)")
     }
 
     private func drain() {
@@ -150,9 +173,19 @@ final class MicrophoneCaptureProcessor: @unchecked Sendable {
         }
         guard status != .error, error == nil else { throw MicrophoneAudioError.conversion }
         guard converted.frameLength > 0, let samples = converted.int16ChannelData?[0] else { return }
+        lock.lock()
+        counters.convertedBuffers &+= 1
+        counters.convertedSamples &+= UInt64(converted.frameLength)
+        lock.unlock()
         // All supported iPad/simulator targets are little-endian; the converter
         // produced signed Int16 mono, exactly the specified wire sample type.
         let pcm = Data(bytes: samples, count: Int(converted.frameLength) * MemoryLayout<Int16>.size)
-        accumulator.append(pcm: pcm, captureTimestampUs: item.timestampUs, emit: onPCM)
+        accumulator.append(pcm: pcm, captureTimestampUs: item.timestampUs) { [self] frame, timestamp in
+            lock.lock()
+            let deliver = accepting
+            if deliver { counters.emittedFrames &+= 1 }
+            lock.unlock()
+            if deliver { onPCM(frame, timestamp) }
+        }
     }
 }

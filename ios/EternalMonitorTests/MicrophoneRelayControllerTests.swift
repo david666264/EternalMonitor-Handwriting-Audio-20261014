@@ -107,4 +107,90 @@ final class MicrophoneRelayControllerTests: XCTestCase {
         XCTAssertEqual(capture.starts, 2)
         controller.stopSession()
     }
+
+    func testEngineStartWaitsForFirstPCMAndSilentFramesStillProveCaptureIsLive() async {
+        let capture = Capture(), permission = Permission()
+        var now: UInt64 = 10_000, clockReads = 0
+        let confirmedStart = expectation(description: "engine start completion")
+        let controller = MicrophoneRelayController(capture: capture, permissions: permission, defaults: nil, nowUs: {
+            clockReads += 1
+            if clockReads == 2 { confirmedStart.fulfill() }
+            return now
+        })
+        session(controller)
+        controller.setEnabled(true)
+        capture.started?(.success(()))
+        await fulfillment(of: [confirmedStart], timeout: 2)
+        XCTAssertEqual(controller.status, .starting, "Engine.start alone cannot advertise live PCM")
+        now += 1_000_000
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .starting)
+        capture.pcm?(Data(repeating: 0, count: 640), now)
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .recording, "Real silence is PCM, and must not be mistaken for a dead tap")
+        XCTAssertEqual(controller.inputLevel, 0)
+        now += MicrophoneRelayController.pcmTimeoutUs
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .noPCM)
+        XCTAssertNil(capture.pcm)
+        let starts = capture.starts
+        now += MicrophoneRelayController.pcmTimeoutUs
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(capture.starts, starts, "Capture loss must not cause an automatic restart loop")
+        controller.stopSession()
+    }
+
+    func testNoInitialPCMHasBoundedFailureAndLateCompletionCannotReviveIt() async {
+        let capture = Capture(), permission = Permission()
+        var now: UInt64 = 0, clockReads = 0
+        let confirmedStart = expectation(description: "engine start completion")
+        let controller = MicrophoneRelayController(capture: capture, permissions: permission, defaults: nil, nowUs: {
+            clockReads += 1
+            if clockReads == 2 { confirmedStart.fulfill() }
+            return now
+        })
+        session(controller)
+        controller.setEnabled(true)
+        capture.started?(.success(()))
+        await fulfillment(of: [confirmedStart], timeout: 2)
+        now = MicrophoneRelayController.pcmTimeoutUs
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .noPCM)
+        XCTAssertEqual(capture.starts, 1)
+        XCTAssertNil(capture.pcm)
+        capture.started?(.success(()))
+        await Task.yield()
+        XCTAssertEqual(controller.status, .noPCM, "A retired engine completion cannot reset the timeout")
+        controller.stopSession()
+    }
+
+    func testOldCapturePCMCannotMarkReplacementSessionRecording() async {
+        let capture = Capture(), permission = Permission()
+        var clockReads = 0
+        let firstStart = expectation(description: "first engine start")
+        let secondStart = expectation(description: "replacement engine start")
+        let controller = MicrophoneRelayController(capture: capture, permissions: permission, defaults: nil, nowUs: {
+            clockReads += 1
+            if clockReads == 2 { firstStart.fulfill() }
+            if clockReads == 4 { secondStart.fulfill() }
+            return 0
+        })
+        session(controller)
+        controller.setEnabled(true)
+        let retiredPCM = capture.pcm
+        capture.started?(.success(()))
+        await fulfillment(of: [firstStart], timeout: 2)
+        session(controller)
+        capture.started?(.success(()))
+        await fulfillment(of: [secondStart], timeout: 2)
+        retiredPCM?(Data(repeating: 1, count: 640), 0)
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .starting)
+        XCTAssertEqual(controller.inputLevel, 0)
+        capture.pcm?(Data(repeating: 1, count: 640), 0)
+        controller.refreshCaptureStatus()
+        XCTAssertEqual(controller.status, .recording)
+        XCTAssertGreaterThan(controller.inputLevel, 0)
+        controller.stopSession()
+    }
 }

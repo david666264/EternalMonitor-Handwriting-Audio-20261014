@@ -75,6 +75,7 @@ struct ActiveSession {
     last_keyframe_grant: Option<Instant>,
     last_report: Option<ReceiverReport>,
     msg_seq_out: u32,
+    microphone_packet_diagnostic_emitted: bool,
 }
 
 /// Provides the current stream parameters for HELLO_ACK/heartbeats.
@@ -178,6 +179,16 @@ impl Session {
         if let Some(session) = &mut self.active {
             session.liveness_deadline = now + LIVENESS_TIMEOUT;
         }
+        true
+    }
+
+    /// A bounded diagnostic for the current session, including rejected first
+    /// packets. Never log packet contents, identities, sequence IDs or tokens.
+    pub fn note_microphone_packet(&mut self, decode_ok: bool, authorized: bool) -> bool {
+        let Some(session) = &mut self.active else { return false; };
+        if session.microphone_packet_diagnostic_emitted { return false; }
+        session.microphone_packet_diagnostic_emitted = true;
+        info!(decode_ok, authorized, "First microphone packet received");
         true
     }
 
@@ -389,6 +400,13 @@ impl Session {
         }
 
         let session_id = self.allocate_session_id();
+        let host_caps = config.host_caps();
+        info!(
+            usb = matches!(source.link, LinkId::Usb { .. }),
+            wants_mic = hello.feature_caps & eternal_wire::v2::control::FEATURE_WANTS_MICROPHONE != 0,
+            host_mic = host_caps & eternal_wire::v2::control::HOSTCAP_MICROPHONE != 0,
+            "Microphone session negotiation"
+        );
         info!(
             peer = %source,
             session_id,
@@ -412,12 +430,13 @@ impl Session {
                 feature_caps: hello.feature_caps,
                 connected_at: now,
             },
-            host_caps: config.host_caps(),
+            host_caps,
             liveness_deadline: now + LIVENESS_TIMEOUT,
             awaiting_takeover: false,
             last_keyframe_grant: None,
             last_report: None,
             msg_seq_out: 0,
+            microphone_packet_diagnostic_emitted: false,
         });
 
         let ack = self.make_ack_with_token(
@@ -713,6 +732,26 @@ mod tests {
         let id = session.session_id().unwrap();
         assert_eq!(session.microphone_session(), None);
         assert!(!session.accept_microphone(wifi, id, now));
+    }
+
+    #[test]
+    fn microphone_packet_diagnostic_is_once_per_session_without_granting_access() {
+        let now = Instant::now(); let usb = PeerId::usb(17);
+        let mut session = Session::new(10);
+        assert!(!session.note_microphone_packet(false, false));
+        session.handle_control(usb, 0, microphone_hello(1, true), &MicrophoneConfig, now);
+        let first_id = session.session_id().unwrap();
+        assert!(session.note_microphone_packet(false, false));
+        assert!(!session.note_microphone_packet(true, true));
+        assert!(session.accept_microphone(usb, first_id, now));
+        assert!(!session.accept_microphone(PeerId::usb(18), first_id, now));
+        // An idempotent HELLO must not reset the diagnostic budget.
+        session.handle_control(usb, 0, microphone_hello(1, true), &MicrophoneConfig, now);
+        assert!(!session.note_microphone_packet(true, true));
+        session.handle_control(usb, 0, microphone_hello(2, true), &MicrophoneConfig, now);
+        assert_ne!(session.session_id(), Some(first_id));
+        assert!(session.note_microphone_packet(true, true));
+        assert!(!session.note_microphone_packet(true, true));
     }
 
     #[test]

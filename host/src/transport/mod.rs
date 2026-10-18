@@ -418,9 +418,19 @@ pub async fn start_sender(
                                 shared.session.lock().note_legacy_hello(src)
                             }
                             Classified::Microphone { .. } => {
-                                if let Ok((header, pcm)) = eternal_wire::v2::microphone::MicrophoneHeader::decode(datagram) {
-                                    let authorized = shared.session.lock().accept_microphone(src, header.session_id, Instant::now());
-                                    if authorized { microphone_bridge.receive_authorized(src, header, pcm); }
+                                let decoded = eternal_wire::v2::microphone::MicrophoneHeader::decode(datagram);
+                                let authorized = {
+                                    let mut session = shared.session.lock();
+                                    let authorized = decoded.as_ref().is_ok_and(|(header, _)| {
+                                        session.accept_microphone(src, header.session_id, Instant::now())
+                                    });
+                                    session.note_microphone_packet(decoded.is_ok(), authorized);
+                                    authorized
+                                };
+                                if authorized {
+                                    if let Ok((header, pcm)) = decoded {
+                                        microphone_bridge.receive_authorized(src, header, pcm);
+                                    }
                                 }
                             }
                             Classified::Media { .. } | Classified::Audio { .. } | Classified::Unknown => {

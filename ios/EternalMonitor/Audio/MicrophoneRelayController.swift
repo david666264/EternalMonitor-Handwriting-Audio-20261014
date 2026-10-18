@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Combine
 import Foundation
+import os
 
 enum MicrophonePermission { case undetermined, granted, denied }
 protocol MicrophonePermissionProviding {
@@ -22,7 +23,7 @@ private struct NativeMicrophonePermission: MicrophonePermissionProviding {
 
 enum MicrophoneRelayStatus: Equatable {
     case off, waitingUSB, permissionRequired, requestingPermission, denied
-    case unsupported, reconnectRequired, starting, recording, interrupted, failed
+    case unsupported, reconnectRequired, starting, recording, interrupted, failed, noPCM
     var description: String {
         switch self {
         case .off: return "已关闭"
@@ -32,10 +33,11 @@ enum MicrophoneRelayStatus: Equatable {
         case .denied: return "未获麦克风权限；画面和电脑声音不受影响"
         case .unsupported: return "当前电脑端不支持麦克风，请更新电脑端"
         case .reconnectRequired: return "需要重新连接以启用麦克风"
-        case .starting: return "正在启用麦克风与回声消除"
+        case .starting: return "正在等待麦克风声音数据"
         case .recording: return "麦克风已开启 · 仅通过 USB 传输"
         case .interrupted: return "系统暂时中断麦克风"
         case .failed: return "麦克风暂不可用，请关闭后重新开启"
+        case .noPCM: return "未收到麦克风声音数据，请关闭后重新开启麦克风"
         }
     }
 }
@@ -68,12 +70,19 @@ final class MicrophoneRelayController: ObservableObject {
     private let level = MicrophoneInputLevel()
     private var levelTimer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private let nowUs: () -> UInt64
+    private var lastPCMCount: UInt64 = 0
+    private var lastPCMAtUs: UInt64 = 0
+    static let pcmTimeoutUs: UInt64 = 3_000_000
+    private let logger = Logger(subsystem: "com.eternal.monitor", category: "microphone")
 
     init(capture: MicrophoneCaptureDeviceProtocol? = nil,
-        permissions: MicrophonePermissionProviding? = nil, defaults: UserDefaults? = .standard) {
+        permissions: MicrophonePermissionProviding? = nil, defaults: UserDefaults? = .standard,
+        nowUs: @escaping () -> UInt64 = ControlChannel.clientNowUs) {
         self.capture = capture ?? MicrophoneCaptureDevice()
         self.permissions = permissions ?? NativeMicrophonePermission()
         self.defaults = defaults
+        self.nowUs = nowUs
         enabled = defaults?.bool(forKey: "sendIPadMicrophone") ?? false
         status = enabled ? .waitingUSB : .off
         let center = NotificationCenter.default
@@ -171,10 +180,14 @@ final class MicrophoneRelayController: ObservableObject {
         captureGeneration &+= 1
         let generation = captureGeneration
         status = .starting
+        level.reset(generation: generation)
+        lastPCMCount = 0
+        lastPCMAtUs = nowUs()
         uplink.start(sessionId: session.id, sendBatch: session.send)
         capture.start(onPCM: { [uplink, level] pcm, timestamp in
-            level.offer(pcm)
-            uplink.offer(pcm: pcm, timestampUs: timestamp)
+            level.offer(pcm, generation: generation) {
+                uplink.offer(pcm: pcm, timestampUs: timestamp)
+            }
         }, onError: { [weak self] in
             Task { @MainActor in
                 guard let self, self.captureGeneration == generation else { return }
@@ -185,7 +198,9 @@ final class MicrophoneRelayController: ObservableObject {
                 guard let self, self.captureGeneration == generation, self.enabled, self.foreground else { return }
                 switch result {
                 case .success:
-                    self.status = .recording
+                    // Starting an engine is not evidence that its tap emits
+                    // PCM. Silence still produces frames and counts as live.
+                    self.lastPCMAtUs = self.nowUs()
                     self.startLevelTimer()
                 case .failure:
                     self.stopCapture(); self.status = .failed
@@ -198,6 +213,7 @@ final class MicrophoneRelayController: ObservableObject {
         captureGeneration &+= 1
         captureRunning = false
         // Close network acceptance before waiting on engine teardown.
+        level.close()
         uplink.stop()
         capture.stop()
         levelTimer?.invalidate(); levelTimer = nil
@@ -208,9 +224,27 @@ final class MicrophoneRelayController: ObservableObject {
         levelTimer?.invalidate()
         levelTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.status == .recording else { return }
-                self.inputLevel = self.level.value
+                self?.refreshCaptureStatus()
             }
+        }
+    }
+
+    /// Poll scalar progress only. No audio is retained or logged, and a dead
+    /// capture stops with a retryable error rather than an automatic loop.
+    func refreshCaptureStatus() {
+        guard captureRunning, status == .starting || status == .recording else { return }
+        let progress = level.snapshot
+        let now = nowUs()
+        if progress.frames != lastPCMCount {
+            lastPCMCount = progress.frames
+            lastPCMAtUs = now
+            status = .recording
+        }
+        inputLevel = progress.value
+        if now >= lastPCMAtUs, now - lastPCMAtUs >= Self.pcmTimeoutUs {
+            logger.error("Microphone PCM stopped; complete_frames=\(progress.frames)")
+            stopCapture()
+            status = .noPCM
         }
     }
 }
@@ -218,17 +252,32 @@ final class MicrophoneRelayController: ObservableObject {
 private final class MicrophoneInputLevel: @unchecked Sendable {
     private let lock = NSLock()
     private var rms = 0.0
-    func offer(_ pcm: Data) {
+    private var frames: UInt64 = 0
+    private var generation: UInt64?
+    func offer(_ pcm: Data, generation: UInt64, accepted: () -> Void) {
         var sum = 0.0
         let count = pcm.count / 2
         guard count > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.generation == generation else { return }
         pcm.withUnsafeBytes { raw in
             for index in 0..<count {
                 let sample = Double(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))) / 32768
                 sum += sample * sample
             }
         }
-        lock.lock(); rms = sqrt(sum / Double(count)); lock.unlock()
+        rms = sqrt(sum / Double(count)); frames &+= 1
+        // Closing this gate and resetting the uplink cannot interleave with
+        // an old capture callback forwarding into a replacement session.
+        accepted()
     }
-    var value: Double { lock.lock(); defer { lock.unlock() }; return min(1, rms * 5) }
+    func reset(generation: UInt64) {
+        lock.lock(); rms = 0; frames = 0; self.generation = generation; lock.unlock()
+    }
+    func close() { lock.lock(); generation = nil; rms = 0; frames = 0; lock.unlock() }
+    var snapshot: (frames: UInt64, value: Double) {
+        lock.lock(); defer { lock.unlock() }
+        return (frames, min(1, rms * 5))
+    }
 }

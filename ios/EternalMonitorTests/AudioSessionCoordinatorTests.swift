@@ -10,11 +10,19 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         var rejectMicrophone = false
         var rejectPlaybackOnly = false
         var rejectMicrophoneOnly = false
+        var onConfigurationChange: ((AnyObject) -> Void)?
+        var engineIdentity = NSObject()
+        var running = true
+        func requiresRebuild(afterConfigurationChange object: AnyObject) -> Bool {
+            object === engineIdentity && !running
+        }
         func rebuild(playback: AudioPCMBuffer?, microphone: MicrophoneCaptureProcessor?) throws {
             plans.append(Plan(playback: playback != nil, microphone: microphone != nil))
             if rejectMicrophone, microphone != nil { throw MicrophoneAudioError.unavailable }
             if rejectPlaybackOnly, playback != nil, microphone == nil { throw MicrophoneAudioError.unavailable }
             if rejectMicrophoneOnly, microphone != nil, playback == nil { throw MicrophoneAudioError.unavailable }
+            engineIdentity = NSObject()
+            running = true
         }
         func shutdown(deactivate: Bool) { shutdowns.append(deactivate) }
     }
@@ -95,6 +103,9 @@ final class AudioSessionCoordinatorTests: XCTestCase {
             processor.offer(buffer, timestampUs: UInt64(index * 20_000))
         }
         wait(for: [received], timeout: 3)
+        XCTAssertGreaterThan(processor.snapshot.tapBuffers, 0)
+        XCTAssertGreaterThan(processor.snapshot.convertedBuffers, 0)
+        XCTAssertGreaterThan(processor.snapshot.emittedFrames, 0)
     }
 
     func testStoppingMicReportsADeadRemainingPlaybackGraphThroughOutputAdapter() throws {
@@ -129,5 +140,50 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(failures, 1, "Repeated failure delivery cannot create a restart/error loop")
         coordinator.stopMicrophone(token: mic)
         processor.stop()
+    }
+
+    func testOnlyCurrentStoppedEngineConfigurationChangeRebuildsBothLeases() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let mic = UUID(), playback = UUID()
+        try coordinator.startPlayback(token: playback, pcm: AudioPCMBuffer())
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        let initialPlans = hardware.plans.count
+        let oldEngine = hardware.engineIdentity
+        hardware.onConfigurationChange?(oldEngine)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertEqual(hardware.plans.count, initialPlans, "A notification alone cannot restart a running graph")
+        hardware.running = false
+        hardware.onConfigurationChange?(oldEngine)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertEqual(hardware.plans.count, initialPlans + 1)
+        XCTAssertTrue(hardware.plans.last?.playback == true)
+        XCTAssertTrue(hardware.plans.last?.microphone == true)
+        hardware.onConfigurationChange?(oldEngine)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertEqual(hardware.plans.count, initialPlans + 1, "Late notifications from a retired engine are ignored")
+        coordinator.stopMicrophone(token: mic)
+        coordinator.stopPlayback(token: playback, deactivate: true)
+        hardware.running = false
+        hardware.onConfigurationChange?(hardware.engineIdentity)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertEqual(hardware.plans.count, initialPlans + 2, "No leases means no automatic graph recreation")
+    }
+
+    func testConfigurationRecoveryFailureReachesBothExistingConsumers() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        var outputFailures = 0, inputFailures = 0
+        try coordinator.startPlayback(token: UUID(), pcm: AudioPCMBuffer(), onFailure: { _ in outputFailures += 1 })
+        let input = MicrophoneCaptureProcessor(onPCM: { _, _ in }, onError: { inputFailures += 1 })
+        try coordinator.startMicrophone(token: UUID(), processor: input)
+        hardware.rejectMicrophone = true
+        hardware.running = false
+        hardware.onConfigurationChange?(hardware.engineIdentity)
+        coordinator.flushPendingHardwareChanges()
+        XCTAssertEqual(outputFailures, 1)
+        XCTAssertEqual(inputFailures, 1)
+        XCTAssertEqual(hardware.shutdowns, [true])
+        input.stop()
     }
 }

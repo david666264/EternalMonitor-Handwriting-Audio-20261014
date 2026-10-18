@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use eternal_wire::v2::microphone::{MicrophoneHeader, MICROPHONE_PCM_BYTES};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::transport::link::{LinkId, PeerId};
 
@@ -181,6 +181,7 @@ impl MicrophoneBridge {
             }
             self.active = Some(ActiveMicrophone { peer, session_id: header.session_id,
                 last_seq: None, capture_ts_us: 0, open: false });
+            info!("Local microphone bridge ready");
         }
         let active = self.active.as_ref().unwrap();
         if !active.accepts(header.mic_seq) { return false; }
@@ -314,5 +315,52 @@ mod tests {
         assert_eq!(receiver.recv(&mut bytes).unwrap(), 40);
         assert_eq!(bytes[5], 1); assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 11);
         bridge.finish(); assert!(receiver.recv(&mut bytes).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn late_local_consumer_receives_same_usb_session_without_reopening_bridge() {
+        // Use a random loopback port, never the user's live ASR bridge. On
+        // Windows ICMP port-unreachable appears on recv (10054), not send;
+        // this production sink only sends and must keep its existing session.
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let destination = reservation.local_addr().unwrap();
+        drop(reservation);
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sender.set_nonblocking(true).unwrap(); sender.connect(destination).unwrap();
+        let peer = PeerId::usb(7);
+        let mut bridge = MicrophoneBridge::new(None);
+        bridge.sink = Some(BridgeSink { socket: sender, token: [0x34; 16] });
+        bridge.active = Some(ActiveMicrophone { peer, session_id: 23, last_seq: None, capture_ts_us: 0, open: false });
+        let header = MicrophoneHeader { session_id: 23, mic_seq: 0, capture_ts_us: 123, end: false };
+        for seq in 0..4 {
+            assert!(bridge.receive_authorized(peer, MicrophoneHeader { mic_seq: seq, ..header }, &[0; MICROPHONE_PCM_BYTES]));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(bridge.failed_session.is_none());
+        let receiver = UdpSocket::bind(destination).unwrap();
+        receiver.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+        assert!(bridge.receive_authorized(peer, MicrophoneHeader { mic_seq: 4, ..header }, &[0x45; MICROPHONE_PCM_BYTES]));
+        let mut bytes = [0; 1024];
+        assert_eq!(receiver.recv(&mut bytes).unwrap(), 680);
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 23);
+        assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 4);
+        assert!(bridge.failed_session.is_none());
+    }
+
+    #[test]
+    fn invalid_local_configuration_stays_failed_closed_for_the_same_session() {
+        let directory = TestDirectory::new(); fs::create_dir_all(&directory.0).unwrap();
+        let path = directory.config();
+        let invalid_bytes = b"invalid credentials retained";
+        fs::write(&path, invalid_bytes).unwrap();
+        let peer = PeerId::usb(7);
+        let mut bridge = MicrophoneBridge::new(Some(path.clone()));
+        let header = MicrophoneHeader { session_id: 23, mic_seq: 0, capture_ts_us: 123, end: false };
+        assert!(!bridge.receive_authorized(peer, header, &[0; MICROPHONE_PCM_BYTES]));
+        assert_eq!(bridge.failed_session, Some((peer, 23)));
+        assert!(bridge.active.is_none()); assert!(bridge.sink.is_none());
+        assert!(!bridge.receive_authorized(peer, MicrophoneHeader { mic_seq: 1, ..header }, &[0; MICROPHONE_PCM_BYTES]));
+        assert_eq!(fs::read(&path).unwrap(), invalid_bytes);
     }
 }
