@@ -438,19 +438,19 @@ final class ControlChannel {
             // Always hop, even when a test or a disconnected transport calls
             // back synchronously. Long documents cannot recurse on the stack.
             self.queue.async { [self] in
-                guard inputGeneration == generation, inputJobs.first === job else { return }
-                inputBatchInFlight = false
+                guard self.inputGeneration == generation, self.inputJobs.first === job else { return }
+                self.inputBatchInFlight = false
                 guard success else {
-                    onDiagnostic?("USB input was interrupted; the text draft was retained.")
-                    cancelInputJobs()
+                    self.onDiagnostic?("USB input was interrupted; the text draft was retained.")
+                    self.cancelInputJobs()
                     return
                 }
-                queuedInputEvents -= count
+                self.queuedInputEvents -= count
                 if job.offset == job.events.count {
-                    inputJobs.removeFirst()
+                    self.inputJobs.removeFirst()
                     job.completion?(true)
                 }
-                sendNextInputBatch()
+                self.sendNextInputBatch()
             }
         }
     }
