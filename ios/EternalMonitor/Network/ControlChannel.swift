@@ -9,6 +9,7 @@ import os
 /// via `handleControl`, callbacks fire on `queue` — the ConnectionManager hops
 /// to the MainActor itself.
 final class ControlChannel {
+    typealias InputBatchTransport = ([Data], @escaping (Bool) -> Void) -> Void
     struct SessionInfo {
         let sessionId: UInt32
         let hostName: String
@@ -35,6 +36,22 @@ final class ControlChannel {
 
     private let queue: DispatchQueue
     private let send: (Data) -> Void
+    private let batchTransport: InputBatchTransport?
+    static let maximumInputBatchEvents = 128
+    static let maximumQueuedInputEvents = 8192
+    private final class InputSendJob {
+        let events: [WireInputEvent]
+        let completion: ((Bool) -> Void)?
+        var offset = 0
+        init(events: [WireInputEvent], completion: ((Bool) -> Void)?) {
+            self.events = events
+            self.completion = completion
+        }
+    }
+    private var inputJobs: [InputSendJob] = []
+    private var queuedInputEvents = 0
+    private var inputBatchInFlight = false
+    private var inputGeneration: UInt64 = 0
 
     private var sessionId: UInt32 = 0
     private var hostCaps: UInt16 = 0
@@ -78,9 +95,11 @@ final class ControlChannel {
     private var lastKeyframeRequestUs: UInt64?
 
     init(queue: DispatchQueue, nowUs: @escaping () -> UInt64 = ControlChannel.clientNowUs,
+         batchTransport: InputBatchTransport? = nil,
          send: @escaping (Data) -> Void) {
         self.queue = queue
         self.nowUs = nowUs
+        self.batchTransport = batchTransport
         self.send = send
     }
 
@@ -109,6 +128,7 @@ final class ControlChannel {
     /// the media stream should target.
     func startHandshake(listenPort: UInt16, identity: ClientIdentity) {
         queue.async { [self] in
+            cancelInputJobs()
             sessionId = 0
             hostCaps = 0
             msgSeq = 0
@@ -343,6 +363,7 @@ final class ControlChannel {
 
     func stop() {
         queue.async { [self] in
+            cancelInputJobs()
             helloTimer?.cancel()
             helloTimer = nil
             reportTimer?.cancel()
@@ -366,16 +387,81 @@ final class ControlChannel {
         sendInputs([event])
     }
 
-    /// Keep a coalesced Pencil sample batch in order through one queue hop.
-    func sendInputs(_ events: [WireInputEvent]) {
+    /// USB input waits for one bounded TCP write at a time. Completion runs
+    /// on the control queue and confirms local transport acceptance only.
+    /// Keeping queued jobs ordered also prevents pointer/key edges from
+    /// overtaking a text chunk that is waiting for the USB writer.
+    func sendInputs(_ events: [WireInputEvent], completion: ((Bool) -> Void)? = nil) {
         queue.async { [self] in
-            guard sessionId != 0 else { return }
-            for event in events {
-                if event.inputVer == 2 && self.hostCaps & HelloAck.hostCapPen == 0 { continue }
-                guard event.kind < 4 || hostCaps & HelloAck.hostCapKeyboard != 0 else { continue }
-                sendMessage(.inputEvent(event))
+            guard sessionId != 0 else { completion?(false); return }
+            let supported = events.filter {
+                !($0.inputVer == 2 && hostCaps & HelloAck.hostCapPen == 0)
+                    && ($0.kind < 4 || hostCaps & HelloAck.hostCapKeyboard != 0)
+            }
+            guard completion == nil || supported.count == events.count else {
+                completion?(false)
+                return
+            }
+            guard !supported.isEmpty else { completion?(true); return }
+            guard batchTransport != nil else {
+                for event in supported { sendMessage(.inputEvent(event)) }
+                completion?(true)
+                return
+            }
+            guard supported.count <= Self.maximumQueuedInputEvents - queuedInputEvents else {
+                onDiagnostic?("Input queue is full; the text draft was retained.")
+                completion?(false)
+                return
+            }
+            inputJobs.append(InputSendJob(events: supported, completion: completion))
+            queuedInputEvents += supported.count
+            sendNextInputBatch()
+        }
+    }
+
+    private func sendNextInputBatch() {
+        guard !inputBatchInFlight, let job = inputJobs.first,
+              let batchTransport, sessionId != 0 else { return }
+        let end = min(job.events.count, job.offset + Self.maximumInputBatchEvents)
+        let count = end - job.offset
+        var packets: [Data] = []
+        packets.reserveCapacity(count)
+        for event in job.events[job.offset..<end] {
+            msgSeq &+= 1
+            packets.append(Wire.encodeControl(sessionId: sessionId, msgSeq: msgSeq, message: .inputEvent(event)))
+        }
+        job.offset = end
+        inputBatchInFlight = true
+        let generation = inputGeneration
+        batchTransport(packets) { [weak self, weak job] success in
+            guard let self, let job else { return }
+            // Always hop, even when a test or a disconnected transport calls
+            // back synchronously. Long documents cannot recurse on the stack.
+            self.queue.async { [self] in
+                guard inputGeneration == generation, inputJobs.first === job else { return }
+                inputBatchInFlight = false
+                guard success else {
+                    onDiagnostic?("USB input was interrupted; the text draft was retained.")
+                    cancelInputJobs()
+                    return
+                }
+                queuedInputEvents -= count
+                if job.offset == job.events.count {
+                    inputJobs.removeFirst()
+                    job.completion?(true)
+                }
+                sendNextInputBatch()
             }
         }
+    }
+
+    private func cancelInputJobs() {
+        inputGeneration &+= 1
+        let jobs = inputJobs
+        inputJobs.removeAll()
+        queuedInputEvents = 0
+        inputBatchInFlight = false
+        for job in jobs { job.completion?(false) }
     }
 
     private func sendMessage(_ message: ControlMessage) {

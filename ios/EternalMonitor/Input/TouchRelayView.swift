@@ -17,6 +17,7 @@ struct TouchRelayView: UIViewRepresentable {
         view.onEvents = { [weak connectionManager] events in
             connectionManager?.sendInputs(events)
         }
+        configureDraftSender(view)
         view.onKeyboardDismiss = { keyboardVisible = false }
         view.onToggleHUD = onToggleHUD
         return view
@@ -25,6 +26,7 @@ struct TouchRelayView: UIViewRepresentable {
     func updateUIView(_ view: RelayTouchUIView, context: Context) {
         view.videoSize = connectionManager.videoSize
         view.keyboardDraftStore = connectionManager.keyboardDraft
+        configureDraftSender(view)
         view.onToggleHUD = onToggleHUD
         view.commandAsControl = settings.commandAsControl
         view.keyboardSupported = connectionManager.sessionHasKeyboard
@@ -34,10 +36,21 @@ struct TouchRelayView: UIViewRepresentable {
         view.keyboardVisible = keyboardVisible
         view.updateKeyboardPresentation()
     }
+
+    private func configureDraftSender(_ view: RelayTouchUIView) {
+        let attempt = connectionManager.keyboardInputSessionID
+        view.onDraftEvents = { [weak connectionManager] events, completion in
+            guard let connectionManager else { completion(false); return }
+            connectionManager.sendDraftInputs(events, expectedAttempt: attempt, completion: completion)
+        }
+    }
 }
 
 final class RelayTouchUIView: UIView {
     var onEvents: (([WireInputEvent]) -> Void)?
+    var onDraftEvents: (([WireInputEvent], @escaping (Bool) -> Void) -> Void)?
+    private(set) var draftSubmissionActive = false
+    private var draftSubmissionGeneration: UInt64 = 0
     var onKeyboardDismiss: (() -> Void)?
     var commandAsControl = true
     var keyboardSupported = false
@@ -45,6 +58,7 @@ final class RelayTouchUIView: UIView {
     var drawingMode = false
     var keyboardVisible = false
     var active = true { didSet { if !active && oldValue {
+        draftSubmissionGeneration &+= 1
         cancelInput(); resignFirstResponder(); keyboardInput.resignFirstResponder()
         keyboardInput.isHidden = true
     } } }
@@ -268,7 +282,7 @@ final class RelayTouchUIView: UIView {
     }
 
     func relayHardwarePressesBegan(_ presses: Set<UIPress>) {
-        guard canSendKeyboardInput else { return }
+        guard canSendKeyboardInput, !draftSubmissionActive else { return }
         for press in presses {
             guard let key = press.key else { continue }
             onEvents?(keyboard.hardware(usage: UInt16(key.keyCode.rawValue), down: true,
@@ -303,24 +317,60 @@ final class RelayTouchUIView: UIView {
     }
 
     func insertRemoteText(_ text: String) {
-        guard active, keyboardSupported else { return }
+        guard active, keyboardSupported, !draftSubmissionActive else { return }
         onEvents?(keyboard.text(text)); keyboardInput.updateSticky(keyboard.sticky)
     }
-    func commitRemoteDraft(_ text: String, appendReturn: Bool) {
-        guard canSendKeyboardInput else { return }
+    func commitRemoteDraft(_ text: String, appendReturn: Bool,
+                           completion: @escaping (Bool) -> Void = { _ in }) {
+        guard canSendKeyboardInput, !draftSubmissionActive else { completion(false); return }
+        draftSubmissionActive = true
         // Text submission is not a Ctrl/Alt shortcut. Release any armed
-        // modifier first, then transmit the exact committed UTF-16 document.
-        var events = keyboard.cancel() + keyboard.text(text)
-        if appendReturn { events += keyboard.tap(0x28) }
-        onEvents?(events)
+        // modifier first, then keep at most one bounded batch in flight.
+        var stream = KeyboardDraftEventStream(text, appendReturn: appendReturn)
+        let first = keyboard.cancel() + stream.nextBatch()
         keyboardInput.updateSticky(keyboard.sticky)
+        // Capture the sender once: later SwiftUI updates may point at a new
+        // session, which must never receive the tail of an earlier draft.
+        sendDraftBatch(first, remaining: stream, generation: draftSubmissionGeneration,
+                       transport: onDraftEvents, completion: completion)
+    }
+
+    private func sendDraftBatch(_ events: [WireInputEvent], remaining: KeyboardDraftEventStream,
+                                generation: UInt64,
+                                transport: (([WireInputEvent], @escaping (Bool) -> Void) -> Void)?,
+                                completion: @escaping (Bool) -> Void) {
+        guard canSendKeyboardInput, generation == draftSubmissionGeneration else {
+            draftSubmissionActive = false; completion(false); return
+        }
+        let accepted: (Bool) -> Void = { [weak self] success in
+            guard let self else { completion(false); return }
+            guard success, self.canSendKeyboardInput, self.draftSubmissionGeneration == generation else {
+                self.draftSubmissionActive = false; completion(false); return
+            }
+            if remaining.isFinished {
+                self.draftSubmissionActive = false
+                completion(true)
+            } else {
+                // Yield between batches so input cannot starve video/audio
+                // callbacks or turn a synchronous test transport into recursion.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { completion(false); return }
+                    var next = remaining
+                    self.sendDraftBatch(next.nextBatch(), remaining: next, generation: generation,
+                                        transport: transport, completion: completion)
+                }
+            }
+        }
+        if let transport { transport(events, accepted) }
+        else if let onEvents { onEvents(events); accepted(true) }
+        else { accepted(false) }
     }
     func tapRemoteKey(_ usage: UInt16) {
-        guard active, keyboardSupported else { return }
+        guard active, keyboardSupported, !draftSubmissionActive else { return }
         onEvents?(keyboard.tap(usage)); keyboardInput.updateSticky(keyboard.sticky)
     }
     func toggleRemoteModifier(_ usage: UInt16) {
-        guard active, keyboardSupported else { return }
+        guard active, keyboardSupported, !draftSubmissionActive else { return }
         onEvents?(keyboard.toggleSticky(usage)); keyboardInput.updateSticky(keyboard.sticky)
     }
 

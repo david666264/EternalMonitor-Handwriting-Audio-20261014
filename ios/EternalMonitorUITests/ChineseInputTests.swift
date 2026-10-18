@@ -21,7 +21,7 @@ final class ChineseInputTests: XCTestCase {
 
     func testChineseAndEmojiDraftCanBeEditedBeforeSendingWithoutEnter() {
         let app = launchApp()
-        let draft = openKeyboard(app)
+        let draft = openCleanKeyboard(app)
         paste("配方😀错误", into: draft, app: app)
         draft.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 2))
         XCTAssertEqual(draft.value as? String, "配方😀")
@@ -47,7 +47,7 @@ final class ChineseInputTests: XCTestCase {
 
     func testClosingKeepsDraftAndReturnIsSentOnlyWhenRequested() {
         let app = launchApp()
-        let draft = openKeyboard(app)
+        let draft = openCleanKeyboard(app)
         draft.typeText("keep")
         app.buttons["keyboard.done"].tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
@@ -74,6 +74,78 @@ final class ChineseInputTests: XCTestCase {
         disconnect(app)
     }
 
+    func testLongChineseSubmissionStaysConnectedAndBackupRestoresOnlyWhenRequested() {
+        let app = launchApp()
+        let draft = openCleanKeyboard(app)
+        let long = longDraft()
+        let expected = draftCommands(long)
+        paste(long, into: draft, app: app)
+        XCTAssertTrue(injectionCommands().isEmpty, "A long draft remains local until explicitly submitted")
+
+        app.buttons["keyboard.submit"].tap()
+        waitForCommands(expected, timeout: 20)
+        XCTAssertEqual(app.state, .runningForeground, "Sending a long draft must not crash the application")
+        XCTAssertTrue(draft.exists, "Sending a long draft must not drop the streaming display")
+        XCTAssertEqual(draft.value as? String, "")
+        XCTAssertFalse(app.textFields["connect.host"].exists)
+        XCTAssertEqual(injectionCommands(), expected,
+                       "The host must receive every UTF-16 unit and newline exactly once, without an extra final Enter")
+        capture("chinese-long-input-submitted", app: app)
+
+        // Force termination, without dismissing the editor or disconnecting:
+        // the submission backup must already be on disk before text is sent.
+        app.terminate()
+        let restarted = launchApp()
+        let empty = openKeyboard(restarted)
+        XCTAssertEqual(empty.value as? String, "", "A previous submission must not become an active draft on launch")
+        assertCommandsRemain(expected, for: 1.5)
+        let restore = restarted.buttons["keyboard.restore"]
+        XCTAssertTrue(restore.exists)
+        XCTAssertTrue(restore.isEnabled)
+        restore.tap()
+        XCTAssertTrue(appears(empty, where: "value == %@", long, within: 5))
+        assertCommandsRemain(expected, for: 1.5)
+        XCTAssertFalse(restore.isEnabled, "Recovery must not overwrite a nonempty draft")
+        capture("chinese-long-input-backup-restored", app: restarted)
+
+        restarted.buttons["keyboard.clear"].tap()
+        restarted.buttons["keyboard.done"].tap()
+        disconnect(restarted)
+    }
+
+    func testUnsubmittedLongDraftSurvivesForcedTerminationWithoutRemoteReplay() {
+        let app = launchApp()
+        let draft = openCleanKeyboard(app)
+        let long = longDraft() + "这是尚未提交的本地草稿。"
+        paste(long, into: draft, app: app)
+        XCTAssertTrue(injectionCommands().isEmpty)
+        // No Done/disconnect path is allowed to save on behalf of the editor:
+        // this specifically exercises persistence while the editor is open.
+        app.terminate()
+
+        let restarted = launchApp()
+        let restored = openKeyboard(restarted)
+        XCTAssertEqual(restored.value as? String, long)
+        assertCommandsRemain([], for: 1.5)
+        XCTAssertFalse(restarted.buttons["keyboard.restore"].isEnabled,
+                       "An earlier submission backup must not overwrite this recovered unsent draft")
+        capture("chinese-long-draft-restarted", app: restarted)
+
+        restarted.buttons["keyboard.clear"].tap()
+        restarted.terminate()
+        let cleared = launchApp()
+        let empty = openKeyboard(cleared)
+        XCTAssertEqual(empty.value as? String, "", "An explicit local clear must also survive application restart")
+        assertCommandsRemain([], for: 1.5)
+        cleared.buttons["keyboard.done"].tap()
+        disconnect(cleared)
+    }
+
+    private func longDraft() -> String {
+        (1...48).map { "第\($0)行：长文字请完整保存，表情😀与换行也要保留。\n" }.joined()
+            + "最后一行：这是完整内容的结尾。"
+    }
+
     private func launchApp() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-didSeeOnboarding", "YES", "-allowUSB", "NO", "-controlPC", "YES",
@@ -83,6 +155,18 @@ final class ChineseInputTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["display.keyboard"].waitForExistence(timeout: 15))
         return app
+    }
+
+    private func openCleanKeyboard(_ app: XCUIApplication) -> XCUIElement {
+        let draft = openKeyboard(app)
+        // Persistence intentionally survives launch. Each independent test
+        // clears only its initial active draft through the same visible UI;
+        // relaunch assertions call openKeyboard instead and never clear it.
+        if let value = draft.value as? String, !value.isEmpty {
+            app.buttons["keyboard.clear"].tap()
+        }
+        XCTAssertEqual(draft.value as? String, "")
+        return draft
     }
 
     private func openKeyboard(_ app: XCUIApplication) -> XCUIElement {
@@ -138,6 +222,19 @@ final class ChineseInputTests: XCTestCase {
         text.utf16.map { "Unicode(\($0))" }
     }
 
+    private func draftCommands(_ text: String) -> [String] {
+        text.replacingOccurrences(of: "\r\n", with: "\n").utf16.flatMap { unit -> [String] in
+            switch unit {
+            case 10, 13:
+                return ["KeyDown { scan: 28, extended: false }", "KeyUp { scan: 28, extended: false }"]
+            case 9:
+                return ["KeyDown { scan: 15, extended: false }", "KeyUp { scan: 15, extended: false }"]
+            default:
+                return ["Unicode(\(unit))"]
+            }
+        }
+    }
+
     private func injectionCommands() -> [String] {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: logPath)), data.count >= logOffset else { return [] }
         let log = String(decoding: data.dropFirst(logOffset), as: UTF8.self)
@@ -149,9 +246,19 @@ final class ChineseInputTests: XCTestCase {
             }
     }
 
-    private func waitForCommands(_ expected: [String]) {
+    private func waitForCommands(_ expected: [String], timeout: TimeInterval = 10) {
         expectation(for: NSPredicate { _, _ in self.injectionCommands() == expected }, evaluatedWith: nil)
-        waitForExpectations(timeout: 10)
+        waitForExpectations(timeout: timeout)
+    }
+
+    private func assertCommandsRemain(_ expected: [String], for duration: TimeInterval) {
+        XCTAssertEqual(injectionCommands(), expected)
+        let unexpected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.injectionCommands() != expected
+        }, object: nil)
+        unexpected.isInverted = true
+        XCTAssertEqual(XCTWaiter().wait(for: [unexpected], timeout: duration), .completed,
+                       "Opening or restoring a draft must not transmit or replay any input")
     }
 
     private func disconnect(_ app: XCUIApplication) {

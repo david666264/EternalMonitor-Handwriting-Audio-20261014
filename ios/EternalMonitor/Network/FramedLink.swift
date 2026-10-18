@@ -20,7 +20,18 @@ final class FramedLink: MediaLink {
     private var announcedPreamble = false
     private var started = false
     private var bufferedPackets: [Data] = []
-    private var pendingSends: [Data] = []
+    private struct PendingSend {
+        let data: Data
+        let completion: ((Bool) -> Void)?
+    }
+    /// Bound bytes rather than packet count: a committed text document is a
+    /// legitimate burst of many small control packets. Each TCP write stays
+    /// small enough that inbound video/audio can keep making progress.
+    static let maximumWriteBytes = 64 * 1024
+    static let maximumPendingBytes = 256 * 1024
+    private var pendingSends: [PendingSend] = []
+    private var pendingSendBytes = 0
+    private var activeCompletions: [(Bool) -> Void] = []
     private var sending = false
 
     var controlQueue: DispatchQueue { queue }
@@ -71,11 +82,49 @@ final class FramedLink: MediaLink {
     }
 
     func send(_ data: Data) {
+        enqueue([data], completion: nil)
+    }
+
+    /// Completion means Network.framework accepted these bytes, not that a
+    /// particular Windows text field received them. Producers wait for this
+    /// boundary before generating their next text chunk; no timed guessing.
+    func sendBatch(_ datagrams: [Data], completion: @escaping (Bool) -> Void) {
+        enqueue(datagrams, completion: completion)
+    }
+
+    private func enqueue(_ datagrams: [Data], completion: ((Bool) -> Void)?) {
         let write = { [self] in
-            guard connection != nil else { return }
-            guard pendingSends.count < 64 else { fail("USB connection stopped responding."); return }
-            do { pendingSends.append(try EMLinkFramer.encode(data)) }
-            catch { fail("Invalid USB packet."); return }
+            guard connection != nil else { completion?(false); return }
+            var framed = Data()
+            do {
+                for datagram in datagrams {
+                    let packet = try EMLinkFramer.encode(datagram)
+                    guard framed.count + packet.count <= Self.maximumPendingBytes else {
+                        completion?(false)
+                        fail("USB input buffer is full; the text draft was retained.")
+                        return
+                    }
+                    framed.append(packet)
+                }
+            } catch {
+                completion?(false)
+                fail("Invalid USB packet.")
+                return
+            }
+            guard !framed.isEmpty else { completion?(true); return }
+            guard pendingSendBytes + framed.count <= Self.maximumPendingBytes else {
+                completion?(false)
+                fail("USB input buffer is full; the text draft was retained.")
+                return
+            }
+            var offset = 0
+            while offset < framed.count {
+                let end = min(framed.count, offset + Self.maximumWriteBytes)
+                pendingSends.append(PendingSend(data: framed.subdata(in: offset..<end),
+                    completion: end == framed.count ? completion : nil))
+                offset = end
+            }
+            pendingSendBytes += framed.count
             sendNext()
         }
         if DispatchQueue.getSpecific(key: queueKey) != nil { write() }
@@ -85,16 +134,32 @@ final class FramedLink: MediaLink {
     private func sendNext() {
         guard let connection, !sending, !pendingSends.isEmpty else { return }
         sending = true
-        // Coalesced Pencil samples already waiting can share one TCP write.
-        // There is no timer or extra buffering delay, and framing preserves
-        // every sample and edge in its original order.
-        let packet = pendingSends.reduce(into: Data()) { $0.append($1) }
-        pendingSends.removeAll(keepingCapacity: true)
+        // Coalesce already waiting controls without delaying any packet.
+        // Framing permits a large logical batch to cross TCP write boundaries.
+        var packet = Data()
+        var count = 0
+        var completions: [(Bool) -> Void] = []
+        for pending in pendingSends {
+            guard packet.count + pending.data.count <= Self.maximumWriteBytes else { break }
+            packet.append(pending.data)
+            if let completion = pending.completion { completions.append(completion) }
+            count += 1
+        }
+        pendingSends.removeFirst(count)
+        pendingSendBytes -= packet.count
+        activeCompletions = completions
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
             guard let self, let connection, self.connection === connection else { return }
             self.sending = false
-            if let error { self.fail("USB send failed: \(error.localizedDescription)") }
-            else { self.sendNext() }
+            let completions = self.activeCompletions
+            self.activeCompletions.removeAll()
+            if let error {
+                for completion in completions { completion(false) }
+                self.fail("USB send failed: \(error.localizedDescription)")
+            } else {
+                for completion in completions { completion(true) }
+                self.sendNext()
+            }
         })
     }
 
@@ -140,7 +205,7 @@ final class FramedLink: MediaLink {
                 // The active send is already queued in Network.framework.
                 // Append our bounded control queue and BYE before write-close.
                 for packet in pendingSends {
-                    closing.send(content: packet, completion: .contentProcessed { _ in })
+                    closing.send(content: packet.data, completion: .contentProcessed { _ in })
                 }
                 closing.send(content: nil, contentContext: .finalMessage, isComplete: true,
                     completion: .contentProcessed { _ in closing.cancel() })
@@ -151,8 +216,13 @@ final class FramedLink: MediaLink {
         }
         connection = nil
         bufferedPackets.removeAll()
+        let completions = activeCompletions + pendingSends.compactMap(\.completion)
+        activeCompletions.removeAll()
         pendingSends.removeAll()
+        pendingSendBytes = 0
+        sending = false
         datagrams.reset()
+        for completion in completions { completion(false) }
     }
 
     private func fail(_ message: String) {

@@ -1,15 +1,6 @@
 import SwiftUI
 import UIKit
 
-/// Session-independent, in-memory only: reconnecting/recreating DisplayView
-/// cannot erase a draft or accidentally promote marked Pinyin to committed text.
-@MainActor
-final class KeyboardDraftStore {
-    var text = ""
-    var selection = NSRange(location: 0, length: 0)
-    var markedRange: NSRange?
-}
-
 /// A native UITextInput document. UIKit owns Chinese composition, selection,
 /// paste and Scribble; only an explicit submission leaves this local draft.
 final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
@@ -19,13 +10,18 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
         didSet { if draftStore !== oldValue { prepareForPresentation() } }
     }
     private var modifierButtons: [UInt16: UIButton] = [:]
+    private var remoteButtons: [UIButton] = []
     private var relayedHardwareKeys = Set<UInt16>()
     private let hint = UILabel()
     private let placeholder = UILabel()
     private var submitButton: UIButton?
     private var submitReturnButton: UIButton?
+    private var restoreButton: UIButton?
+    private var clearButton: UIButton?
+    private(set) var isSubmittingDraft = false
     private var restoringDraft = false
     private var preservingDraftOnDismiss = false
+    private var statusMessage: String?
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -69,6 +65,10 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
             placeholder.trailingAnchor.constraint(lessThanOrEqualTo: frameLayoutGuide.trailingAnchor, constant: -12)
         ])
         inputAccessoryView = accessory
+        NotificationCenter.default.addObserver(self, selector: #selector(flushDraft),
+            name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(flushDraft),
+            name: UIApplication.willTerminateNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -77,6 +77,7 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
         let wasFirstResponder = isFirstResponder
         if wasFirstResponder {
             saveDraft()
+            draftStore?.flush()
             preservingDraftOnDismiss = true
         }
         let resigned = super.resignFirstResponder()
@@ -93,34 +94,58 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
         guard let store = draftStore else { return }
         restoringDraft = true
         text = store.text
-        let length = (store.text as NSString).length
-        let selection = NSRange(location: min(length, max(0, store.selection.location)),
-            length: min(store.selection.length, max(0, length - store.selection.location)))
-        if let marked = store.markedRange, marked.location <= length,
-           marked.length <= length - marked.location {
+        let selection = KeyboardDraftStore.sanitizedRange(store.selection, in: store.text)
+        if let marked = KeyboardDraftStore.sanitizedMarkedRange(store.markedRange, in: store.text) {
             selectedRange = marked
             let markedText = (store.text as NSString).substring(with: marked)
             let relative = min(marked.length, max(0, selection.location - marked.location))
             super.setMarkedText(markedText, selectedRange: NSRange(location: relative, length: 0))
         } else { selectedRange = selection }
         restoringDraft = false
+        if store.restorationFailed { statusMessage = "旧草稿读取失败，原文件已保留；请先核对文字" }
         updateDraftPresentation()
+    }
+
+    @objc private func flushDraft() {
+        saveDraft()
+        if draftStore?.flush() == false {
+            statusMessage = "草稿保存失败，请先复制文字备份"
+            hint.text = statusMessage
+        }
     }
 
     private func saveDraft() {
         guard !restoringDraft, !preservingDraftOnDismiss, let store = draftStore else { return }
-        store.text = text ?? ""
-        store.selection = selectedRange
-        store.markedRange = markedTextRange.map {
+        let marked = markedTextRange.map {
             NSRange(location: offset(from: beginningOfDocument, to: $0.start),
                 length: offset(from: $0.start, to: $0.end))
         }
+        if !store.update(text: text ?? "", selection: selectedRange, markedRange: marked) {
+            statusMessage = "文字过长，草稿未保存；请分段输入或复制备份"
+        }
     }
 
-    func textViewDidChange(_ textView: UITextView) { updateDraftPresentation() }
+    func textViewDidChange(_ textView: UITextView) {
+        statusMessage = nil
+        updateDraftPresentation()
+    }
     func textViewDidChangeSelection(_ textView: UITextView) { updateDraftPresentation() }
 
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText: String) -> Bool {
+        guard !isSubmittingDraft else { return false }
+        let currentLength = (text ?? "").utf16.count
+        guard range.location != NSNotFound, range.location >= 0, range.length >= 0,
+              range.location <= currentLength, range.length <= currentLength - range.location else { return false }
+        let room = KeyboardDraftStore.maximumUTF16Length - (currentLength - range.length)
+        guard replacementText.utf16.count <= room else {
+            hint.text = "文字过长，请分段输入；当前草稿已保留"
+            return false
+        }
+        return true
+    }
+
     override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        guard !isSubmittingDraft else { return }
         super.setMarkedText(markedText, selectedRange: selectedRange)
         updateDraftPresentation()
     }
@@ -131,6 +156,7 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
     }
 
     override func insertText(_ text: String) {
+        guard !isSubmittingDraft else { return }
         // Explicit remote Ctrl/Alt/Win still supports a one-key shortcut.
         // Normal typing, including hardware-keyboard IME, stays local.
         if !hasText, markedTextRange == nil, relay?.hasRemoteStickyModifiers == true,
@@ -142,6 +168,7 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
     }
 
     override func deleteBackward() {
+        guard !isSubmittingDraft else { return }
         if hasText || markedTextRange != nil { super.deleteBackward() }
         else { relay?.tapRemoteKey(0x2a) }
         updateDraftPresentation()
@@ -151,6 +178,7 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
     /// its Pinyin; the user first chooses a word, then submits it explicitly.
     @discardableResult
     func submitDraft(appendReturn: Bool = false) -> Bool {
+        guard !isSubmittingDraft else { return false }
         guard markedTextRange == nil else {
             hint.text = "请先选择候选词，再输入到电脑"
             return false
@@ -161,33 +189,70 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
         }
         let draft = text ?? ""
         guard !draft.isEmpty else { return false }
-        relay.commitRemoteDraft(draft, appendReturn: appendReturn)
-        text = ""
-        undoManager?.removeAllActions()
+        saveDraft()
+        guard let draftStore, draftStore.rememberSubmission(draft) else {
+            statusMessage = "输入前备份失败，请先复制文字；草稿已保留"
+            updateDraftPresentation()
+            return false
+        }
+        isSubmittingDraft = true
+        statusMessage = "正在分段输入，草稿已备份…"
         updateDraftPresentation()
-        hint.text = appendReturn ? "已输入到电脑并回车" : "已输入到电脑；尚未按回车"
+        relay.commitRemoteDraft(draft, appendReturn: appendReturn) { [weak self] accepted in
+            guard let self else { return }
+            self.isSubmittingDraft = false
+            if accepted {
+                // Keep the recovery copy. Reopening never resends it.
+                self.text = ""
+                self.draftStore?.update(text: "", selection: NSRange(location: 0, length: 0), markedRange: nil)
+                self.undoManager?.removeAllActions()
+                self.statusMessage = appendReturn ? "已交给连接并回车；可恢复上次输入"
+                    : "已交给连接；尚未按回车，可恢复上次输入"
+            } else {
+                self.statusMessage = "传输中断，草稿已保留；请先核对电脑是否收到部分文字"
+            }
+            self.updateDraftPresentation()
+            self.draftStore?.flush()
+        }
         return true
     }
 
     func clearDraft() {
+        guard !isSubmittingDraft else { return }
         // This is a local edit, never a remote Backspace.
         if markedTextRange != nil { super.unmarkText() }
         text = ""
         undoManager?.removeAllActions()
+        statusMessage = nil
         updateDraftPresentation()
+        draftStore?.flush()
+    }
+
+    @discardableResult
+    func restoreLastSubmission() -> Bool {
+        guard !isSubmittingDraft, !hasText, let draftStore,
+              draftStore.restoreLastSubmission() else { return false }
+        prepareForPresentation()
+        statusMessage = "已恢复上次输入；重新发送前请先核对电脑内容"
+        updateDraftPresentation()
+        return true
     }
 
     private func updateDraftPresentation() {
         saveDraft()
         placeholder.isHidden = hasText
-        let ready = hasText && markedTextRange == nil
+        let ready = hasText && markedTextRange == nil && !isSubmittingDraft
         submitButton?.isEnabled = ready
         submitReturnButton?.isEnabled = ready
-        hint.text = markedTextRange != nil ? "正在选字；确认候选词后再输入电脑"
-            : "先点电脑输入框；选字后点“输入到电脑”"
+        clearButton?.isEnabled = !isSubmittingDraft
+        for button in remoteButtons { button.isEnabled = !isSubmittingDraft }
+        restoreButton?.isEnabled = !isSubmittingDraft && !hasText && !(draftStore?.lastSubmittedText.isEmpty ?? true)
+        hint.text = statusMessage ?? (markedTextRange != nil ? "正在选字；确认候选词后再输入电脑"
+            : "先点电脑输入框；选字后点“输入到电脑”")
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard !isSubmittingDraft else { return }
         var local = Set<UIPress>()
         var remote = Set<UIPress>()
         for press in presses {
@@ -276,7 +341,12 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
         submitReturnButton = submitReturn
         actions.addArrangedSubview(submit)
         actions.addArrangedSubview(submitReturn)
-        actions.addArrangedSubview(button("清空草稿", id: "keyboard.clear") { [weak self] in self?.clearDraft() })
+        let clear = button("清空草稿", id: "keyboard.clear") { [weak self] in self?.clearDraft() }
+        clearButton = clear
+        actions.addArrangedSubview(clear)
+        let restore = button("恢复上次输入", id: "keyboard.restore") { [weak self] in self?.restoreLastSubmission() }
+        restoreButton = restore
+        actions.addArrangedSubview(restore)
         actions.addArrangedSubview(button("收起", id: "keyboard.done") { [weak self] in self?.onDismiss?() })
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -325,6 +395,7 @@ final class RelayKeyboardInputView: UITextView, UITextViewDelegate {
             }
             key.accessibilityLabel = label
             key.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            remoteButtons.append(key)
             if KeyboardRelayMachine.modifierBit(usage) != 0 {
                 modifierButtons[usage] = key
                 key.accessibilityValue = "未按下"

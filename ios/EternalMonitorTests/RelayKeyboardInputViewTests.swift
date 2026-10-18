@@ -9,6 +9,7 @@ final class RelayKeyboardInputViewTests: XCTestCase {
         relay.keyboardSupported = true
         let editor = RelayKeyboardInputView(frame: CGRect(x: 0, y: 0, width: 700, height: 106), textContainer: nil)
         editor.relay = relay
+        editor.draftStore = KeyboardDraftStore(persistenceURL: nil)
         return (editor, relay)
     }
 
@@ -18,6 +19,116 @@ final class RelayKeyboardInputViewTests: XCTestCase {
         XCTAssertTrue(editor.isEditable)
         XCTAssertTrue(editor.isSelectable)
         XCTAssertEqual(editor.accessibilityIdentifier, "keyboard.input")
+    }
+
+    func testLongDraftWaitsForEachAcceptedBatchAndKeepsRecoveryCopy() async {
+        let (editor, relay) = makeEditor()
+        let text = String(repeating: "中文😀\r\n", count: 150)
+        editor.insertText(text)
+        var events: [WireInputEvent] = []
+        let finished = expectation(description: "Every bounded draft chunk was accepted")
+        var expectedKeyboard = KeyboardRelayMachine()
+        let expected = expectedKeyboard.text(text)
+        relay.onDraftEvents = { batch, done in
+            XCTAssertLessThanOrEqual(batch.count, 258)
+            XCTAssertEqual(editor.draftStore?.lastSubmittedText, text,
+                           "A recoverable copy must exist before the first write")
+            events += batch
+            DispatchQueue.main.async {
+                done(true)
+                if events.count == expected.count { finished.fulfill() }
+            }
+        }
+        XCTAssertTrue(editor.submitDraft())
+        XCTAssertTrue(editor.isSubmittingDraft)
+        XCTAssertEqual(editor.text, text, "Do not erase a draft while only part of it has been accepted")
+        XCTAssertFalse(editor.submitDraft(), "Repeated taps cannot start another transfer")
+        editor.clearDraft()
+        XCTAssertEqual(editor.text, text)
+        await fulfillment(of: [finished], timeout: 5)
+        XCTAssertEqual(events, expected)
+        XCTAssertEqual(editor.text, "")
+        XCTAssertFalse(editor.isSubmittingDraft)
+        XCTAssertTrue(editor.isEditable)
+        XCTAssertTrue(editor.restoreLastSubmission())
+        XCTAssertEqual(editor.text, text)
+        XCTAssertEqual(events, expected, "Restoring a backup must never send it")
+        XCTAssertFalse(editor.restoreLastSubmission(), "Recovery cannot replace a nonempty draft")
+    }
+
+    func testFailedDraftTransportKeepsTextAndDoesNotRetryOrClear() {
+        let (editor, relay) = makeEditor()
+        let text = String(repeating: "保留草稿😀", count: 60)
+        editor.insertText(text)
+        var attempts = 0
+        relay.onDraftEvents = { _, done in attempts += 1; done(false) }
+        XCTAssertTrue(editor.submitDraft())
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(editor.text, text)
+        XCTAssertEqual(editor.draftStore?.text, text)
+        XCTAssertEqual(editor.draftStore?.lastSubmittedText, text)
+        XCTAssertFalse(editor.isSubmittingDraft)
+        XCTAssertTrue(editor.isEditable)
+        editor.prepareForPresentation()
+        XCTAssertEqual(attempts, 1, "Reopening after failure must not replay any text")
+    }
+
+    func testSubmissionDoesNotResumeAfterDisconnectEvenIfViewBecomesActiveAgain() async {
+        let (editor, relay) = makeEditor()
+        let text = String(repeating: "断线后不要接着输入", count: 80)
+        editor.insertText(text)
+        var callbacks: [(Bool) -> Void] = []
+        relay.onDraftEvents = { _, done in callbacks.append(done) }
+        var otherEvents: [WireInputEvent] = []
+        relay.onEvents = { otherEvents += $0 }
+        XCTAssertTrue(editor.submitDraft())
+        XCTAssertEqual(callbacks.count, 1)
+        relay.tapRemoteKey(0x28)
+        relay.toggleRemoteModifier(0xe0)
+        XCTAssertTrue(otherEvents.isEmpty, "Remote Enter and Ctrl cannot interrupt a text transfer")
+        relay.active = false
+        relay.active = true
+        callbacks[0](true)
+        await Task.yield()
+        XCTAssertEqual(callbacks.count, 1)
+        XCTAssertEqual(editor.text, text)
+        XCTAssertFalse(editor.isSubmittingDraft)
+    }
+
+    func testSuccessfulSubmissionClearsStoredDraftEvenWhenKeyboardWasDismissed() {
+        let (editor, relay) = makeEditor()
+        editor.insertText("收起也不能重新出现已发文字")
+        var accepted: ((Bool) -> Void)?
+        relay.onDraftEvents = { _, done in accepted = done }
+        XCTAssertTrue(editor.submitDraft())
+        // A real responder saves and freezes its local snapshot on dismissal.
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let controller = UIViewController()
+        window.rootViewController = controller
+        controller.view.addSubview(editor)
+        window.makeKeyAndVisible()
+        editor.becomeFirstResponder()
+        editor.resignFirstResponder()
+        accepted?(true)
+        XCTAssertEqual(editor.draftStore?.text, "")
+        XCTAssertEqual(editor.draftStore?.lastSubmittedText, "收起也不能重新出现已发文字")
+        editor.prepareForPresentation()
+        XCTAssertEqual(editor.text, "")
+        window.isHidden = true
+    }
+
+    func testUnwritableBackupPreventsTransportAndRetainsDraft() throws {
+        let (editor, relay) = makeEditor()
+        let invalid = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([0]).write(to: invalid)
+        defer { try? FileManager.default.removeItem(at: invalid) }
+        editor.draftStore = KeyboardDraftStore(persistenceURL: invalid.appendingPathComponent("draft.json"))
+        editor.insertText("保存失败也要留下我")
+        var events: [WireInputEvent] = []
+        relay.onEvents = { events += $0 }
+        XCTAssertFalse(editor.submitDraft())
+        XCTAssertEqual(editor.text, "保存失败也要留下我")
+        XCTAssertTrue(events.isEmpty)
     }
 
     func testMarkedPinyinNeverLeavesDraftAndCandidateCommitsOnlyOnce() {
@@ -156,7 +267,7 @@ final class RelayKeyboardInputViewTests: XCTestCase {
     }
 
     func testDraftSurvivesViewRecreationWithoutCommittingMarkedPinyin() {
-        let store = KeyboardDraftStore()
+        let store = KeyboardDraftStore(persistenceURL: nil)
         let (first, firstRelay) = makeEditor()
         first.draftStore = store
         first.insertText("问题：")

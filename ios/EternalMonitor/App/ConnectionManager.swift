@@ -207,6 +207,28 @@ final class ConnectionManager: ObservableObject {
             timeUs: ControlChannel.clientNowUs(), reliable: mediaLink?.isUSB == true))
     }
 
+    /// Completion means the local transport accepted this batch, not that a
+    /// particular PC text field received it. A replaced session never resumes
+    /// an earlier draft automatically.
+    var keyboardInputSessionID: UUID? {
+        state == .connected ? currentAttempt.withLock({ $0 }) : nil
+    }
+
+    func sendDraftInputs(_ events: [WireInputEvent], expectedAttempt: UUID?, completion: @escaping (Bool) -> Void) {
+        guard state == .connected, sessionWantsInput, let channel = controlChannelBox.value,
+              let attempt = expectedAttempt,
+              currentAttempt.withLock({ $0 == attempt }) else { completion(false); return }
+        let packets = inputSequence.packets(events, timeUs: ControlChannel.clientNowUs(),
+                                            reliable: mediaLink?.isUSB == true)
+        channel.sendInputs(packets) { [weak self] accepted in
+            Task { @MainActor [weak self] in
+                guard let self else { completion(false); return }
+                completion(accepted && self.state == .connected &&
+                    self.currentAttempt.withLock({ $0 == attempt }))
+            }
+        }
+    }
+
     // MARK: - Connect / Disconnect
 
     func connect(host: String, port: UInt16, token: Data? = nil) {
@@ -390,7 +412,14 @@ final class ConnectionManager: ObservableObject {
 
         receiver.assembler = assembler
 
-        let channel = ControlChannel(queue: receiver.controlQueue, send: { [weak receiver] data in
+        let batchTransport: ControlChannel.InputBatchTransport?
+        if let usbLink = receiver as? FramedLink {
+            batchTransport = { [weak usbLink] packets, done in
+                guard let usbLink else { done(false); return }
+                usbLink.sendBatch(packets, completion: done)
+            }
+        } else { batchTransport = nil }
+        let channel = ControlChannel(queue: receiver.controlQueue, batchTransport: batchTransport, send: { [weak receiver] data in
             receiver?.send(data)
         })
         controlChannelBox.value = channel

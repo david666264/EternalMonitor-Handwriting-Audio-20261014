@@ -2,6 +2,22 @@ import XCTest
 @testable import EternalMonitor
 
 final class KeyboardRelayTests: XCTestCase {
+    func testLongDraftStreamMatchesExactUnicodeAndNewlineEventsWithBoundedBatches() {
+        let text = String(repeating: "中😀\r\n文\n\t", count: 1000)
+        for size in [1, 7, 128] {
+            var stream = KeyboardDraftEventStream(text, appendReturn: true)
+            var actual: [WireInputEvent] = []
+            while !stream.isFinished {
+                let batch = stream.nextBatch(maximumUnits: size)
+                XCTAssertLessThanOrEqual(batch.count, size * 2 + 2)
+                actual += batch
+            }
+            var keyboard = KeyboardRelayMachine()
+            XCTAssertEqual(actual, keyboard.text(text) + keyboard.tap(0x28))
+            XCTAssertTrue(stream.nextBatch().isEmpty, "The final Return cannot be emitted twice")
+        }
+    }
+
     func testHIDCoverageAndCommandMapping() {
         for usage in UInt16(0)...255 {
             XCTAssertEqual(KeyboardRelayMachine.isSupported(usage),

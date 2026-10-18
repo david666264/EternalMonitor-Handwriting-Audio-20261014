@@ -174,6 +174,53 @@ struct KeyboardRelayMachine {
     }
 }
 
+/// A long draft never expands into one unbounded array of input events.
+/// UTF-16 units stay in order (including both halves of an emoji), while
+/// CRLF is converted to one PC Return even across a batch boundary.
+struct KeyboardDraftEventStream {
+    private var units: String.UTF16View.Iterator
+    private var pending: UInt16?
+    private var previousWasCR = false
+    private var needsReturn: Bool
+    var isFinished: Bool { pending == nil && !needsReturn }
+
+    init(_ text: String, appendReturn: Bool) {
+        var iterator = text.utf16.makeIterator()
+        pending = iterator.next()
+        units = iterator
+        needsReturn = appendReturn
+    }
+
+    mutating func nextBatch(maximumUnits: Int = 128) -> [WireInputEvent] {
+        var events: [WireInputEvent] = []
+        var consumed = 0
+        while let unit = pending, consumed < max(1, maximumUnits) {
+            pending = units.next()
+            consumed += 1
+            if unit == 10 && previousWasCR { previousWasCR = false; continue }
+            previousWasCR = unit == 13
+            if unit == 10 || unit == 13 || unit == 9 {
+                let usage: UInt16 = unit == 9 ? 0x2b : 0x28
+                for phase in [UInt8(0), 2] {
+                    events.append(WireInputEvent(kind: 4, phase: phase, buttons: 0,
+                        eventId: 0, xNorm: 0, yNorm: 0, keycode: usage, clientTimeUs: 0))
+                }
+            } else {
+                events.append(WireInputEvent(kind: 5, phase: 0, buttons: 0,
+                    eventId: 0, xNorm: 0, yNorm: 0, keycode: unit, clientTimeUs: 0))
+            }
+        }
+        if pending == nil && needsReturn {
+            needsReturn = false
+            for phase in [UInt8(0), 2] {
+                events.append(WireInputEvent(kind: 4, phase: phase, buttons: 0,
+                    eventId: 0, xNorm: 0, yNorm: 0, keycode: 0x28, clientTimeUs: 0))
+            }
+        }
+        return events
+    }
+}
+
 /// One ID sequence across touch, keyboard and pointer sources, including
 /// view recreation during a session. Retransmitted edges keep the same ID.
 struct InputEventSequencer {
