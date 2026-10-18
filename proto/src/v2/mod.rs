@@ -23,6 +23,7 @@
 pub mod audio;
 pub mod control;
 pub mod media;
+pub mod microphone;
 
 /// "EM" interpreted as a little-endian u16 (bytes 0x45, 0x4D on the wire).
 pub const MAGIC: u16 = 0x4D45;
@@ -45,6 +46,8 @@ pub enum PacketType {
     /// Reserved for forward-error-correction parity datagrams. Not sent in v2.0.
     MediaFec = 0x02,
     Audio = 0x03,
+    /// USB-only iPad microphone uplink (PCM16LE, mono 16 kHz).
+    Microphone = 0x04,
     Hello2 = 0x10,
     HelloAck = 0x11,
     Heartbeat = 0x12,
@@ -66,6 +69,7 @@ impl PacketType {
             0x01 => Self::Media,
             0x02 => Self::MediaFec,
             0x03 => Self::Audio,
+            0x04 => Self::Microphone,
             0x10 => Self::Hello2,
             0x11 => Self::HelloAck,
             0x12 => Self::Heartbeat,
@@ -168,6 +172,8 @@ pub enum Classified {
     Media { flags: u8 },
     /// An Opus packet — hand to [`audio::AudioHeader::decode`].
     Audio { flags: u8 },
+    /// A client microphone packet; accepted only by a negotiated USB session.
+    Microphone { flags: u8 },
     /// A v2 control datagram — hand to [`control::parse_control`].
     Control(PacketType),
     /// A v1 "ETERNALHELLO" registration from an old client.
@@ -189,6 +195,9 @@ pub fn classify(datagram: &[u8]) -> Classified {
                 flags: prefix.flags,
             },
             PacketType::Audio => Classified::Audio {
+                flags: prefix.flags,
+            },
+            PacketType::Microphone => Classified::Microphone {
                 flags: prefix.flags,
             },
             other => Classified::Control(other),

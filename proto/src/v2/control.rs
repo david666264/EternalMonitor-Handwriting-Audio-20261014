@@ -36,6 +36,7 @@ pub const CAP_DECODE_HEVC_10BIT: u16 = 1 << 2;
 /// [`Hello2::feature_caps`] bits.
 pub const FEATURE_WANTS_INPUT: u16 = 1 << 0;
 pub const FEATURE_WANTS_AUDIO: u16 = 1 << 1;
+pub const FEATURE_WANTS_MICROPHONE: u16 = 1 << 3;
 pub const FEATURE_SUPPORTS_NACK: u16 = 1 << 2;
 pub const HOSTCAP_NACK: u16 = 1 << 0;
 pub const HOSTCAP_AUDIO: u16 = 1 << 1;
@@ -43,6 +44,7 @@ pub const HOSTCAP_USB: u16 = 1 << 2;
 pub const HOSTCAP_KEYBOARD: u16 = 1 << 3;
 /// Native Windows pen injection, including input_ver 2 tilt and hover.
 pub const HOSTCAP_PEN: u16 = 1 << 4;
+pub const HOSTCAP_MICROPHONE: u16 = 1 << 5;
 
 /// [`StreamConfig::flags`] bits.
 pub const STREAM_FLAG_SOFTWARE_ENCODER: u8 = 1 << 0;
@@ -670,7 +672,11 @@ pub fn parse_control(datagram: &[u8]) -> Result<(ControlHeader, ControlMessage),
                 tilt_y: if input_ver == 2 { r.i16()? } else { 0 },
             })
         }
-        PacketType::Media | PacketType::MediaFec | PacketType::Audio | PacketType::Error => {
+        PacketType::Media
+        | PacketType::MediaFec
+        | PacketType::Audio
+        | PacketType::Microphone
+        | PacketType::Error => {
             return Err(WireError::InvalidField("packet_type"));
         }
     };

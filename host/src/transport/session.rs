@@ -69,6 +69,7 @@ struct ActiveSession {
     auth_token: [u8; 16],
     peer: PeerId,
     info: ClientInfo,
+    host_caps: u16,
     liveness_deadline: Instant,
     awaiting_takeover: bool,
     last_keyframe_grant: Option<Instant>,
@@ -159,6 +160,25 @@ impl Session {
                         != 0
             })
             .map(|session| session.session_id)
+    }
+
+    /// A microphone uplink is opt-in on both ends and exists only on the
+    /// exact authorized USB peer, never on a same-address Wi-Fi connection.
+    pub fn microphone_session(&self) -> Option<(PeerId, u32)> {
+        self.active.as_ref().filter(|session| {
+            !session.awaiting_takeover
+                && matches!(session.peer.link, LinkId::Usb { .. })
+                && session.info.feature_caps & eternal_wire::v2::control::FEATURE_WANTS_MICROPHONE != 0
+                && session.host_caps & eternal_wire::v2::control::HOSTCAP_MICROPHONE != 0
+        }).map(|session| (session.peer, session.session_id))
+    }
+
+    pub fn accept_microphone(&mut self, source: PeerId, session_id: u32, now: Instant) -> bool {
+        if self.microphone_session() != Some((source, session_id)) { return false; }
+        if let Some(session) = &mut self.active {
+            session.liveness_deadline = now + LIVENESS_TIMEOUT;
+        }
+        true
     }
 
     pub fn last_report(&self) -> Option<ReceiverReport> {
@@ -392,6 +412,7 @@ impl Session {
                 feature_caps: hello.feature_caps,
                 connected_at: now,
             },
+            host_caps: config.host_caps(),
             liveness_deadline: now + LIVENESS_TIMEOUT,
             awaiting_takeover: false,
             last_keyframe_grant: None,
@@ -657,6 +678,75 @@ mod tests {
     use eternal_wire::v2::control::{Hello2, KeyframeReason, CAP_DECODE_H264};
 
     struct TestConfig;
+
+    struct MicrophoneConfig;
+    impl ConfigSource for MicrophoneConfig {
+        fn stream_config(&self) -> StreamConfig { TestConfig.stream_config() }
+        fn host_name(&self) -> String { TestConfig.host_name() }
+        fn host_caps(&self) -> u16 { eternal_wire::v2::control::HOSTCAP_MICROPHONE }
+    }
+
+    fn microphone_hello(nonce: u32, wants: bool) -> ControlMessage {
+        let ControlMessage::Hello2(mut hello) = hello(nonce, 0) else { unreachable!() };
+        hello.device_id = 77;
+        hello.feature_caps = if wants { eternal_wire::v2::control::FEATURE_WANTS_MICROPHONE } else { 0 };
+        ControlMessage::Hello2(hello)
+    }
+
+    #[test]
+    fn microphone_requires_both_capabilities_and_usb_even_if_wifi_is_authorized() {
+        let now = Instant::now(); let usb = PeerId::usb(17);
+        for (wants, host_supports) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut session = Session::new(10);
+            if host_supports {
+                session.handle_control(usb, 0, microphone_hello(1, wants), &MicrophoneConfig, now);
+            } else {
+                session.handle_control(usb, 0, microphone_hello(1, wants), &TestConfig, now);
+            }
+            let id = session.session_id().unwrap();
+            assert_eq!(session.accept_microphone(usb, id, now), wants && host_supports);
+        }
+        let wifi = addr([127, 0, 0, 1], 50000);
+        let mut session = Session::new(10);
+        session.handle_control(wifi, 0, microphone_hello(1, true), &MicrophoneConfig, now);
+        assert!(session.is_active());
+        let id = session.session_id().unwrap();
+        assert_eq!(session.microphone_session(), None);
+        assert!(!session.accept_microphone(wifi, id, now));
+    }
+
+    #[test]
+    fn microphone_rejects_stale_session_wrong_cable_peer_and_unhandshaken_data() {
+        let now = Instant::now(); let usb = PeerId::usb(17);
+        let mut session = Session::new(10);
+        assert!(!session.accept_microphone(usb, 10, now));
+        session.handle_control(usb, 0, microphone_hello(1, true), &MicrophoneConfig, now);
+        let old = session.session_id().unwrap();
+        assert!(session.accept_microphone(usb, old, now));
+        assert!(!session.accept_microphone(PeerId::usb(18), old, now));
+        assert!(!session.accept_microphone(PeerId::udp("127.0.0.1:50000".parse().unwrap()), old, now));
+        session.handle_control(usb, 0, microphone_hello(2, true), &MicrophoneConfig, now);
+        let current = session.session_id().unwrap(); assert_ne!(old, current);
+        assert!(!session.accept_microphone(usb, old, now));
+        assert!(session.accept_microphone(usb, current, now));
+    }
+
+    #[test]
+    fn microphone_is_revoked_on_background_bye_cable_loss_or_timeout() {
+        let now = Instant::now(); let usb = PeerId::usb(17);
+        for end in 0..3 {
+            let mut session = Session::new(10);
+            session.handle_control(usb, 0, microphone_hello(1, true), &MicrophoneConfig, now);
+            let id = session.session_id().unwrap();
+            let actions = match end {
+                0 => session.handle_control(usb, id, ControlMessage::Bye(ByeReason::AppBackground), &MicrophoneConfig, now),
+                1 => session.link_lost(usb.link),
+                _ => session.tick(&MicrophoneConfig, false, now + LIVENESS_TIMEOUT),
+            };
+            assert!(actions.client_lost); assert_eq!(session.microphone_session(), None);
+            assert!(!session.accept_microphone(usb, id, now));
+        }
+    }
 
     impl ConfigSource for TestConfig {
         fn stream_config(&self) -> StreamConfig {

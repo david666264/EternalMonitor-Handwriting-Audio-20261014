@@ -147,6 +147,7 @@ impl ConfigSource for SharedConfigSource<'_> {
             0
         };
         eternal_wire::v2::control::HOSTCAP_KEYBOARD
+            | eternal_wire::v2::control::HOSTCAP_MICROPHONE
             | if self.pen_available {
                 eternal_wire::v2::control::HOSTCAP_PEN
             } else {
@@ -271,6 +272,7 @@ pub async fn start_sender(
 
     let mut retransmit_ring = RetransmitRing::default();
     let mut audio_sender = audio::AudioSender::default();
+    let mut microphone_bridge = crate::audio::microphone_bridge::MicrophoneBridge::default();
     let pacing_clock = PacingClock::new()?;
 
     let mut links = TransportLinks::new(socket, std::sync::Arc::clone(&shared.force_next_idr));
@@ -301,7 +303,7 @@ pub async fn start_sender(
             }
             _ = heartbeat.tick() => {
                 let actions = shared.session.lock().tick(&config, true, Instant::now());
-                if actions.client_lost { retransmit_ring.clear(); fault.clear(); input_relay.reset(); }
+                if actions.client_lost { retransmit_ring.clear(); fault.clear(); input_relay.reset(); microphone_bridge.finish(); }
                 execute_actions(actions, &links, &shared, &supervisor_tx).await;
             }
             _ = liveness_tick.tick() => {
@@ -311,7 +313,7 @@ pub async fn start_sender(
                     break;
                 }
                 let actions = shared.session.lock().tick(&config, false, Instant::now());
-                if actions.client_lost { retransmit_ring.clear(); fault.clear(); input_relay.reset(); }
+                if actions.client_lost { retransmit_ring.clear(); fault.clear(); input_relay.reset(); microphone_bridge.finish(); }
                 execute_actions(actions, &links, &shared, &supervisor_tx).await;
             }
 
@@ -319,6 +321,7 @@ pub async fn start_sender(
                 match result {
                     Ok(LinkEvent::Closed(id)) => {
                         let actions = shared.session.lock().link_lost(id);
+                        if actions.client_lost { microphone_bridge.finish(); }
                         execute_actions(actions, &links, &shared, &supervisor_tx).await;
                     }
                     Ok(LinkEvent::Datagram(src, datagram)) => {
@@ -339,6 +342,7 @@ pub async fn start_sender(
                                             Instant::now(),
                                         );
                                         if actions.new_target.is_some() || actions.client_lost {
+                                            microphone_bridge.finish();
                                             input_relay.reset();
                                             retransmit_ring.clear();
                                             fault.clear();
@@ -412,6 +416,12 @@ pub async fn start_sender(
                             }
                             Classified::LegacyHello => {
                                 shared.session.lock().note_legacy_hello(src)
+                            }
+                            Classified::Microphone { .. } => {
+                                if let Ok((header, pcm)) = eternal_wire::v2::microphone::MicrophoneHeader::decode(datagram) {
+                                    let authorized = shared.session.lock().accept_microphone(src, header.session_id, Instant::now());
+                                    if authorized { microphone_bridge.receive_authorized(src, header, pcm); }
+                                }
                             }
                             Classified::Media { .. } | Classified::Audio { .. } | Classified::Unknown => {
                                 debug!(peer = %src, len = datagram.len(), "Ignored unexpected datagram");
@@ -546,6 +556,7 @@ pub async fn start_sender(
         }
     }
 
+    microphone_bridge.finish();
     info!("NAL channel closed, transport sender shutting down");
     Ok(())
 }

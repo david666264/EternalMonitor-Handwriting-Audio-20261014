@@ -2,6 +2,7 @@
 
 pub mod encoder;
 pub mod pcm;
+pub mod microphone_bridge;
 pub mod output_route;
 pub mod resample;
 mod stage;

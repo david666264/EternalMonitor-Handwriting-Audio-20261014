@@ -522,6 +522,7 @@ fn packet_type_registry_is_stable() {
     // protocol compatibility — do that only with a version bump.
     assert_eq!(PacketType::Media as u8, 0x01);
     assert_eq!(PacketType::Audio as u8, 0x03);
+    assert_eq!(PacketType::Microphone as u8, 0x04);
     assert_eq!(PacketType::Hello2 as u8, 0x10);
     assert_eq!(PacketType::HelloAck as u8, 0x11);
     assert_eq!(PacketType::Heartbeat as u8, 0x12);
