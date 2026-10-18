@@ -38,7 +38,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Chinese Windows host
         run: cargo build --release --locked -p eternal-host
+      - name: Build synthetic microphone validation tool
+        run: cargo build --release --locked -p eternal-host --example system_microphone_probe
       - uses: actions/upload-artifact@v4
         with:
           name: EternalMonitor-Windows-Chinese
-          path: target/release/eternal-host.exe
+          path: |
+            target/release/eternal-host.exe
+            target/release/examples/system_microphone_probe.exe

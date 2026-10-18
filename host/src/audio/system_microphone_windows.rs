@@ -168,7 +168,9 @@ fn recommended_device_format(bytes: &[u8]) -> bool {
     if bytes.len() < 40 { return false; }
     let base = unsafe { bytes.as_ptr().cast::<WAVEFORMATEX>().read_unaligned() };
     base.wFormatTag == 0xfffe && base.nChannels == 2 && base.nSamplesPerSec == 48000
-        && base.wBitsPerSample == 32 && base.nBlockAlign == 8 && base.cbSize >= 22
+        && base.wBitsPerSample == 32 && base.nBlockAlign == 8 && base.nAvgBytesPerSec == 384000
+        && base.cbSize >= 22 && bytes[18..20] == 32u16.to_le_bytes()
+        && bytes[20..24] == 3u32.to_le_bytes()
         && unsafe { bytes.as_ptr().add(24).cast::<GUID>().read_unaligned() } == PCM_GUID
 }
 

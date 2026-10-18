@@ -57,8 +57,6 @@ UDP 为非阻塞发送；不可用、坏配置或本机发送失败只停止该�
 
 Windows 本机非阻塞 connected UDP 在没有消费者时仍可发送，消费者稍后启动可在同一 USB 麦克风会话收到后续包。独立回环复现确认 `10054` 出现在读取 ICMP 错误的 `recv`；本桥从不调用 `recv`，所以不据此修改现有发送错误策略。坏配置、权限或实际发送失败继续关闭该次桥，不自动替换凭据。
 
-## 验证范围
-
 ## Windows 桌面录音入口
 
 若电脑已有并启用了 Steam Streaming Microphone 的录音和播放端，Host 会把同一份已授权 USB PCM 交给独立 WASAPI 工作线程。普通应用选择 `麦克风 (Steam Streaming Microphone)` 即可读取 iPad 声音；主程序的私有 UDP 桥继续提供原始 16 kHz PCM，供本地应用按自己的无线麦优先和音源锁定规则选择。
