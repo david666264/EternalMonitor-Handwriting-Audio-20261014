@@ -149,35 +149,21 @@ final class USBStreamTests: XCTestCase {
     private func openSettings(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let settings = app.buttons["display.settings"]
         let drawingControls = app.buttons["display.drawingControls"]
-        XCTAssertTrue(drawingControls.waitForExistence(timeout: 5), file: file, line: line)
-        // Earlier transport/audio assertions and screenshots can consume the
-        // entire five-second HUD lifetime. An `exists` snapshot just before
-        // tap is not a lifetime lease: the button can disappear while XCTest
-        // waits for idle. First establish a hidden state, then reopen a fresh
-        // HUD and interact within its full lifetime. If the timer races our
-        // first toggle, verify the state and toggle again rather than guess.
-        let hidden = NSPredicate(format: "exists == false")
-        var confirmedHidden = !settings.exists
-        for _ in 0..<3 where !confirmedHidden {
-            drawingControls.tap()
-            confirmedHidden = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: hidden, object: settings)],
-                timeout: 1) == .completed
+        let opened = app.switches["settings.playPCaudio"]
+        // Like AudioStreamTests, tolerate the five-second fade between the
+        // accessibility lookup and the touch. Snapshot throws if the control
+        // already vanished; a coordinate tap is followed by a real sheet
+        // assertion, so a missed touch never counts as a successful open.
+        for _ in 0..<3 where !opened.exists {
+            if !settings.exists && drawingControls.exists { drawingControls.tap() }
+            guard settings.waitForExistence(timeout: 3),
+                  let frame = try? settings.snapshot().frame, !frame.isEmpty else { continue }
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
+            if opened.waitForExistence(timeout: 3) { return }
         }
-        guard confirmedHidden else {
-            capture("usb-settings-could-not-hide-hud", app: app)
-            XCTFail("Could not establish a hidden HUD before opening Settings", file: file, line: line)
-            return
-        }
-        drawingControls.tap()
-        let visible = NSPredicate(format: "exists == true AND hittable == true")
-        guard XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: visible, object: settings)],
-            timeout: 3) == .completed else {
-            capture("usb-settings-could-not-show-hud", app: app)
-            XCTFail("Settings did not become tappable in a fresh HUD", file: file, line: line)
-            return
-        }
-        settings.tap()
-        XCTAssertTrue(app.switches["settings.playPCaudio"].waitForExistence(timeout: 5), file: file, line: line)
+        if !opened.exists { capture("usb-settings-did-not-open", app: app) }
+        XCTAssertTrue(opened.exists, "Settings must open and expose the audio switch", file: file, line: line)
     }
 
     private func cable(_ command: String) {
