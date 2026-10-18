@@ -133,13 +133,17 @@ final class AudioSessionCoordinator: @unchecked Sendable {
 /// pointer while microphone input remains active, keeping VoiceProcessing IO
 /// alive. The render thread takes a strong snapshot before releasing the lock.
 final class AudioPlaybackSlot: @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock<AudioPCMBuffer?>(initialState: nil)
+    // This lock protects only publication of the PCM object reference. Its
+    // sample storage has its own lock; render takes a strong snapshot and
+    // releases this slot lock before touching that storage. The unchecked
+    // APIs express that boundary without claiming AudioPCMBuffer is Sendable.
+    private let state = OSAllocatedUnfairLock<AudioPCMBuffer?>(uncheckedState: nil)
 
-    func replace(_ pcm: AudioPCMBuffer?) { state.withLock { $0 = pcm } }
+    func replace(_ pcm: AudioPCMBuffer?) { state.withLockUnchecked { $0 = pcm } }
 
     @discardableResult
     func render(frames: Int, buffers: UnsafeMutableAudioBufferListPointer, nowUs: UInt64) -> Bool {
-        if let pcm = state.withLock({ $0 }) {
+        if let pcm = state.withLockUnchecked({ $0 }) {
             pcm.render(frames: frames, buffers: buffers, nowUs: nowUs)
             return true
         }
@@ -240,8 +244,8 @@ private final class NativeDuplexAudioHardware: DuplexAudioHardware {
             slot.replace(playback)
             let source = AVAudioSourceNode(format: format) { silence, _, frameCount, list in
                 let buffers = UnsafeMutableAudioBufferListPointer(list)
-                silence.pointee = !slot.render(frames: Int(frameCount), buffers: buffers,
-                    nowUs: ControlChannel.clientNowUs())
+                silence.pointee = ObjCBool(!slot.render(frames: Int(frameCount), buffers: buffers,
+                    nowUs: ControlChannel.clientNowUs()))
                 return noErr
             }
             stage = "source-connect"
