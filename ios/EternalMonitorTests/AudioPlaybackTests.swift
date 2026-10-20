@@ -358,6 +358,9 @@ final class AudioPlayerTests: XCTestCase {
             object: AVAudioSession.sharedInstance(), userInfo: [
                 AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue
             ])
+        eventually("A live interruption closes playback before the explicit stop") {
+            output.snapshot.stops == [false]
+        }
         player.stop()
         XCTAssertEqual(output.snapshot.stops, [false, true], "A real interruption must retain its existing stop path")
     }
