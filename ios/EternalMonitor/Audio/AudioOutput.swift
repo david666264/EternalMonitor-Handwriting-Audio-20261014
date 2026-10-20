@@ -23,9 +23,10 @@ final class AudioOutput: AudioOutputDevice {
     func setGraphFailureHandler(_ handler: @escaping (Error) -> Void) { graphFailureHandler = handler }
 
     func start(pcm: AudioPCMBuffer) throws {
-        try coordinator.startPlayback(token: token, pcm: pcm, onFailure: { [weak self] error in
-            self?.graphFailureHandler?(error)
-        })
+        // The coordinator may report a retired graph after another start has
+        // installed its handler. Keep each failure tied to its original lease.
+        let onFailure = graphFailureHandler
+        try coordinator.startPlayback(token: token, pcm: pcm, onFailure: onFailure)
     }
 
     func stop(deactivate: Bool) {

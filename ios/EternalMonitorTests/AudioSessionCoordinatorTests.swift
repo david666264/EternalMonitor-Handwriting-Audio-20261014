@@ -133,6 +133,34 @@ final class AudioSessionCoordinatorTests: XCTestCase {
         output.stop(deactivate: true)
     }
 
+    func testOutputFailureHandlerIsCapturedByTheLeaseThatStartedIt() throws {
+        let hardware = Hardware()
+        let coordinator = AudioSessionCoordinator(hardware: hardware)
+        let output = AudioOutput(coordinator: coordinator)
+        var firstFailures = 0, replacementFailures = 0
+        output.setGraphFailureHandler { _ in firstFailures += 1 }
+        try output.start(pcm: AudioPCMBuffer())
+        // Preparing a future generation's callback must not change ownership
+        // of the graph that is currently running.
+        output.setGraphFailureHandler { _ in replacementFailures += 1 }
+        let mic = UUID()
+        try coordinator.startMicrophone(token: mic, processor: processor())
+        hardware.rejectPlaybackOnly = true
+        coordinator.stopMicrophone(token: mic)
+        XCTAssertEqual(firstFailures, 1)
+        XCTAssertEqual(replacementFailures, 0, "An old graph cannot deliver into a newly installed handler")
+        output.stop(deactivate: true)
+        hardware.rejectPlaybackOnly = false
+        try output.start(pcm: AudioPCMBuffer())
+        let nextMic = UUID()
+        try coordinator.startMicrophone(token: nextMic, processor: processor())
+        hardware.rejectPlaybackOnly = true
+        coordinator.stopMicrophone(token: nextMic)
+        XCTAssertEqual(firstFailures, 1)
+        XCTAssertEqual(replacementFailures, 1, "The next start captures the replacement handler")
+        output.stop(deactivate: true)
+    }
+
     func testStoppingPlaybackReportsADeadRemainingCaptureGraphOnlyOnce() throws {
         let hardware = Hardware()
         let coordinator = AudioSessionCoordinator(hardware: hardware)

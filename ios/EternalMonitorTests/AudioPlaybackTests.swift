@@ -36,6 +36,217 @@ final class AudioPlayerTests: XCTestCase {
         func stop(deactivate: Bool) { stopped.signal() }
     }
 
+    private final class RecoverableOutput: AudioOutputDevice {
+        private let lock = NSLock()
+        private var handler: ((Error) -> Void)?
+        private var leases: [((Error) -> Void)?] = []
+        private var stops: [Bool] = []
+        private var remainingFailures: Int
+        init(failingStarts: Int = 0) { remainingFailures = failingStarts }
+        func setGraphFailureHandler(_ handler: @escaping (Error) -> Void) {
+            lock.lock(); self.handler = handler; lock.unlock()
+        }
+        func start(pcm: AudioPCMBuffer) throws {
+            lock.lock()
+            leases.append(handler)
+            let reject = remainingFailures > 0
+            if reject { remainingFailures -= 1 }
+            lock.unlock()
+            if reject { throw NSError(domain: "AudioPlaybackTests", code: 1) }
+        }
+        func stop(deactivate: Bool) { lock.lock(); stops.append(deactivate); lock.unlock() }
+        func failLease(_ index: Int) {
+            lock.lock(); let callback = leases[index]; lock.unlock()
+            callback?(NSError(domain: "AudioPlaybackTests", code: 2))
+        }
+        var snapshot: (starts: Int, stops: [Bool]) {
+            lock.lock(); defer { lock.unlock() }
+            return (leases.count, stops)
+        }
+    }
+
+    private func send(_ seq: UInt32, to player: AudioPlayer) throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tone_1khz_20ms",
+            withExtension: "opus", subdirectory: "Fixtures"))
+        player.receive(header: AudioHeader(sessionId: 7, streamEpoch: 1, audioSeq: seq,
+            captureTimestampUs: UInt64(seq) * 20_000, discontinuity: seq == 1),
+            opus: try Data(contentsOf: url))
+    }
+
+    private func interrupt(_ type: AVAudioSession.InterruptionType) {
+        NotificationCenter.default.post(name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            userInfo: [AVAudioSessionInterruptionTypeKey: type.rawValue])
+    }
+
+    private func eventually(_ message: String, file: StaticString = #filePath, line: UInt = #line,
+                            _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition(), Date() < deadline { Thread.sleep(forTimeInterval: 0.005) }
+        XCTAssertTrue(condition(), message, file: file, line: line)
+    }
+
+    func testInterruptionEndClearsFailedGraphAndWaitsForFreshPacket() throws {
+        let output = RecoverableOutput(failingStarts: 1)
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        try send(1, to: player)
+        eventually("Initial hardware failure must be visible") { player.stats.error != nil }
+        interrupt(.began)
+        eventually("Interruption closes the failed lease") { output.snapshot.stops.count >= 2 }
+        interrupt(.ended)
+        eventually("Ended clears the failure and stale PCM") {
+            player.stats.error == nil && player.stats.bufferMs == 0 && output.snapshot.stops.count >= 3
+        }
+        XCTAssertEqual(output.snapshot.starts, 1, "Recovery cannot start hardware without fresh PC audio")
+        try send(2, to: player)
+        eventually("The next real packet resumes playback") { output.snapshot.starts == 2 && player.stats.playing }
+        XCTAssertEqual(player.stats.decoded, 2, "Old timeline counters survive, but old samples do not")
+        XCTAssertNil(player.stats.error)
+    }
+
+    func testExplicitEnableRecoversWhenDictationDoesNotDeliverEnded() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        interrupt(.began)
+        eventually("Dictation suspends playback") { output.snapshot.stops == [false] }
+        player.setEnabled(true)
+        eventually("Explicit enable retires the interrupted output") { output.snapshot.stops.count == 2 }
+        XCTAssertEqual(output.snapshot.starts, 1)
+        try send(2, to: player)
+        eventually("Explicit enable permits a new output without ended") { player.stats.playing && output.snapshot.starts == 2 }
+    }
+
+    func testForegroundRecoversFailedOutputOnFreshPacket() throws {
+        let output = RecoverableOutput(failingStarts: 1)
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        try send(1, to: player)
+        eventually("Initial failure is visible") { player.stats.error != nil }
+        player.handleForeground()
+        eventually("Foreground clears the failed lease") { player.stats.error == nil && output.snapshot.stops.count == 2 }
+        XCTAssertEqual(output.snapshot.starts, 1)
+        try send(2, to: player)
+        eventually("Foreground recovery resumes real playback") { player.stats.playing && output.snapshot.starts == 2 }
+    }
+
+    func testForegroundRecoversMissingEndedButLeavesHealthyOutputAlone() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        player.handleForeground()
+        try send(2, to: player)
+        eventually("Healthy output continues decoding") { player.stats.decoded == 2 }
+        XCTAssertEqual(output.snapshot.starts, 1)
+        XCTAssertTrue(output.snapshot.stops.isEmpty, "Opening the app cannot rebuild a healthy audio graph")
+        interrupt(.began)
+        eventually("Interruption suspends playback") { output.snapshot.stops == [false] }
+        player.handleForeground()
+        eventually("Foreground retires the interrupted lease") { output.snapshot.stops.count == 2 }
+        try send(3, to: player)
+        eventually("Missing ended is recovered") { player.stats.playing && output.snapshot.starts == 2 }
+    }
+
+    func testLateGraphFailureCannotStopReplacementOrReportAnError() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        let failed = expectation(description: "Retired graph error is ignored")
+        failed.isInverted = true
+        player.onError = { _ in failed.fulfill() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        interrupt(.began)
+        eventually("Interruption closes old output") { output.snapshot.stops.count == 1 }
+        interrupt(.ended)
+        eventually("End retires interruption state") { output.snapshot.stops.count == 2 }
+        try send(2, to: player)
+        eventually("Replacement starts") { player.stats.playing && output.snapshot.starts == 2 }
+        output.failLease(0)
+        wait(for: [failed], timeout: 0.1)
+        try send(3, to: player)
+        eventually("Replacement still decodes after old graph error") { player.stats.decoded == 3 }
+        XCTAssertEqual(output.snapshot.stops.count, 2)
+        XCTAssertTrue(player.stats.playing)
+        XCTAssertNil(player.stats.error)
+    }
+
+    func testCurrentGraphFailureCanRecoverButMutedAndStoppedPlayersCannotResume() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        output.failLease(0)
+        eventually("A live graph failure must still be reported") { player.stats.error != nil }
+        player.handleForeground()
+        eventually("Foreground clears a real graph failure") { player.stats.error == nil && output.snapshot.stops.count == 2 }
+        try send(2, to: player)
+        eventually("Current graph is replaceable") { player.stats.playing && output.snapshot.starts == 2 }
+        player.setEnabled(false)
+        eventually("User mute closes output") { output.snapshot.stops.count == 3 }
+        interrupt(.began)
+        interrupt(.ended)
+        player.handleForeground()
+        try send(3, to: player)
+        let muted = expectation(description: "Muted player stays silent after recovery events")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { muted.fulfill() }
+        wait(for: [muted], timeout: 1)
+        XCTAssertEqual(output.snapshot.starts, 2)
+        XCTAssertFalse(player.stats.playing)
+        player.stop()
+        interrupt(.ended)
+        player.handleForeground()
+        player.setEnabled(true)
+        try send(4, to: player)
+        let stopped = expectation(description: "Stopped player stays stopped")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { stopped.fulfill() }
+        wait(for: [stopped], timeout: 1)
+        XCTAssertEqual(output.snapshot.starts, 2)
+        XCTAssertFalse(player.stats.playing)
+    }
+
+    func testLateGraphFailureIsIgnoredImmediatelyAfterMute() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        let failed = expectation(description: "Muted output cannot report a late graph error")
+        failed.isInverted = true
+        player.onError = { _ in failed.fulfill() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        player.setEnabled(false)
+        output.failLease(0)
+        wait(for: [failed], timeout: 0.1)
+        XCTAssertNil(player.stats.error)
+        XCTAssertFalse(player.stats.playing)
+    }
+
+    func testGraphFailureDuringInterruptionDoesNotLatchOrPreventResume() throws {
+        let output = RecoverableOutput()
+        let player = AudioPlayer(output: output)
+        defer { player.stop() }
+        let failed = expectation(description: "An interrupted lease cannot report a late graph failure")
+        failed.isInverted = true
+        player.onError = { _ in failed.fulfill() }
+        try send(1, to: player)
+        eventually("Initial playback starts") { player.stats.playing }
+        interrupt(.began)
+        eventually("The interrupted lease is closed") { output.snapshot.stops.count == 1 }
+        output.failLease(0)
+        wait(for: [failed], timeout: 0.1)
+        XCTAssertNil(player.stats.error)
+        interrupt(.ended)
+        eventually("Ended prepares the next lease") { output.snapshot.stops.count == 2 }
+        try send(2, to: player)
+        eventually("Interrupted graph error cannot block fresh audio") { output.snapshot.starts == 2 && player.stats.playing }
+    }
+
     func testSlowOutputStartupDoesNotBlockPacketDecoding() throws {
         let output = BlockingOutput(entered: expectation(description: "output startup entered"))
         let player = AudioPlayer(output: output)

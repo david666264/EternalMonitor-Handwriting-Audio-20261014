@@ -44,12 +44,6 @@ final class AudioPlayer {
 
     init(output: AudioOutputDevice = AudioOutput()) {
         self.output = output
-        output.setGraphFailureHandler { [weak self] error in
-            // A remaining speaker lease can fail while the microphone is
-            // being stopped/reconfigured. Report that same output failure on
-            // the player's queue instead of leaving its UI falsely playing.
-            self?.queue.async { [weak self] in self?.fail(error) }
-        }
         queue.setSpecific(key: queueKey, value: true)
         let timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(5), leeway: .milliseconds(1))
@@ -59,13 +53,21 @@ final class AudioPlayer {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(), queue: nil) { [weak self] notice in
-            let began = (notice.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
-                == AVAudioSession.InterruptionType.began.rawValue
+            guard let rawType = notice.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
             self?.queue.async { [weak self] in
-                guard let self else { return }
-                self.interrupted = began
-                self.closeOutput(deactivate: false)
-                self.retireTimeline()
+                guard let self, !self.incoming.withLock({ $0.stopped }) else { return }
+                if type == .began {
+                    self.interrupted = true
+                    self.closeOutput(deactivate: false)
+                    self.retireTimeline()
+                    self.measurements.withLock { $0.playing = false; $0.bufferMs = 0 }
+                } else {
+                    // Dictation can invalidate the graph before its ended
+                    // notification arrives. Retire that failure and old PCM;
+                    // only the next real PC packet may open a fresh lease.
+                    self.prepareForRecovery(deactivate: false)
+                }
             }
         })
         // AudioSessionCoordinator owns hardware route/configuration changes.
@@ -99,9 +101,21 @@ final class AudioPlayer {
             self.closeOutput(deactivate: true)
             self.retireTimeline()
             self.failed = false
+            if enabled { self.interrupted = false }
             self.measurements.withLock {
                 $0.playing = false; $0.bufferMs = 0; $0.error = nil
             }
+        }
+    }
+
+    func handleForeground() {
+        queue.async { [weak self] in
+            guard let self, self.incoming.withLock({ $0.enabled && !$0.stopped }),
+                  self.failed || self.interrupted else { return }
+            // Some system input sessions do not deliver an ended event to
+            // this player. Returning to the app is an explicit recovery point,
+            // while a healthy graph must remain untouched.
+            self.prepareForRecovery(deactivate: false)
         }
     }
 
@@ -157,19 +171,45 @@ final class AudioPlayer {
     }
 
     private func openOutput() {
+        guard canPlay, !failed else { return }
         outputRequested = true
         let generation = outputGeneration
         let queue = self.queue
         outputQueue.async { [weak self, output, pcm] in
+            // Install and snapshot the handler on the same output owner as
+            // start(). A delayed failure belongs to this lease generation.
+            output.setGraphFailureHandler { [weak self] error in
+                queue.async { [weak self] in
+                    guard let self, self.acceptsOutputResult(generation: generation) else { return }
+                    self.fail(error)
+                }
+            }
             let result = Result { try output.start(pcm: pcm) }
             queue.async { [weak self] in
-                guard let self, self.outputGeneration == generation else { return }
+                guard let self, self.acceptsOutputResult(generation: generation) else { return }
                 switch result {
                 case .success: self.outputRunning = true
                 case .failure(let error): self.fail(error)
                 }
             }
         }
+    }
+
+    private var canPlay: Bool {
+        !interrupted && incoming.withLock { $0.enabled && !$0.stopped }
+    }
+
+    private func acceptsOutputResult(generation: UInt64) -> Bool {
+        outputGeneration == generation && outputRequested && canPlay
+    }
+
+    private func prepareForRecovery(deactivate: Bool) {
+        incoming.withLock { $0.packets.removeAll(keepingCapacity: true) }
+        closeOutput(deactivate: deactivate)
+        retireTimeline()
+        failed = false
+        interrupted = false
+        measurements.withLock { $0.playing = false; $0.bufferMs = 0; $0.error = nil }
     }
 
     private func fail(_ error: Error) {

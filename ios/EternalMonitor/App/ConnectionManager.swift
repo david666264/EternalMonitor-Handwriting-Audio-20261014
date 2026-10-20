@@ -852,6 +852,7 @@ final class ConnectionManager: ObservableObject {
 
     /// Resume the session that backgrounding interrupted (opt-out toggle).
     func handleAppForegrounded() {
+        audioPlayer?.handleForeground()
         microphone.handleForeground()
         isForeground = true
         usbPaused = false
@@ -864,6 +865,15 @@ final class ConnectionManager: ObservableObject {
         else { return }
         record(.info, "ctrl", "App foregrounded — resuming the interrupted session")
         connect(host: target.host, port: target.port)
+    }
+
+    /// Dismissing local dictation may not produce a scene transition or an
+    /// audio interruption-ended notification. Treat this user action as one
+    /// recovery opportunity without reconnecting or changing preferences.
+    func handleLocalKeyboardDismissed() {
+        guard isForeground, state != .disconnected else { return }
+        audioPlayer?.handleForeground()
+        microphone.handleForeground()
     }
 
     func disconnect(reason: ByeReason = .userDisconnect) {

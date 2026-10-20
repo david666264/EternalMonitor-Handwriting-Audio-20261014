@@ -12,6 +12,7 @@ status=0
 EM_TEST_STAMP="$STAMP" "$ROOT/scripts/test_ios.sh" \
     -only-testing:EternalMonitorUITests/AudioStreamTests \
     -only-testing:EternalMonitorUITests/StreamDiagnosticsTests \
+    -only-testing:EternalMonitorUITests/StreamLifecycleTests/testBackgroundResumeWithAudio \
     -only-testing:EternalMonitorUITests/USBStreamTests > "$OUT/ui-run.log" 2>&1 || status=$?
 TEST_ROOT="${EM_UI_EVIDENCE_DIR:-$ROOT/build}"
 RESULT="$TEST_ROOT/ios-tests-$STAMP.xcresult"
@@ -28,8 +29,8 @@ import json,pathlib,shutil,sys
 out,shots=map(pathlib.Path,sys.argv[1:3]); errors=[]
 if sys.argv[3]!='0': errors.append('Streaming UI tests failed; see ui-run.log')
 summary=json.loads((out/'tests.json').read_text()) if (out/'tests.json').exists() else {}
-if summary.get('passedTests',0)!=8 or summary.get('failedTests',0)!=0:
-    errors.append('Expected eight passing streaming UI tests')
+if summary.get('passedTests',0)!=9 or summary.get('failedTests',0)!=0:
+    errors.append('Expected nine passing streaming UI tests')
 retained=out/'screenshots'/shots.name
 if shots.exists(): shutil.copytree(shots,retained)
 images=sorted(retained.glob('*.png'))
@@ -38,6 +39,6 @@ report=dict(scenario='stream-ui',status='FAIL' if errors else 'PASS',elapsed=int
     tests_passed=summary.get('passedTests',0),screenshot=str(images[0]) if images else '',errors=errors)
 (out/'result.json').write_text(json.dumps(report,indent=2)+'\n')
 if errors: sys.exit('; '.join(errors))
-print('PASS: live audio, drawing audio on/off over Wi-Fi and USB, repair diagnostics, USB connect/disconnect and cable fallback')
+print('PASS: live audio, background resume, drawing audio on/off over Wi-Fi and USB, repair diagnostics, USB connect/disconnect and cable fallback')
 print('Evidence: '+str(out))
 PY

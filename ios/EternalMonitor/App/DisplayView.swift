@@ -107,7 +107,10 @@ struct DisplayView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .onChange(of: showKeyboard) { _, presented in
             if presented { hudDismissTask?.cancel(); showHUD = true }
-            else { scheduleHUDDismiss() }
+            else {
+                connectionManager.handleLocalKeyboardDismissed()
+                scheduleHUDDismiss()
+            }
         }
         .onChange(of: showSettings) { _, presented in
             if presented { showKeyboard = false; hudDismissTask?.cancel() }
