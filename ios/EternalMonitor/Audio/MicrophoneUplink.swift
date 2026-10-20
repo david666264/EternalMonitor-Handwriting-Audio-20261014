@@ -1,11 +1,14 @@
 import Foundation
 
-/// A small live-audio queue, independent of reliable keyboard jobs. Slow USB
-/// drops old speech frames instead of retaining audio indefinitely or filling
-/// FramedLink's control buffer. There is only one transport batch in flight.
+/// A small live-audio queue, independent of reliable keyboard jobs. A native
+/// input tap can deliver 100 ms at once, despite the requested tap size. Keep
+/// that normal five-frame burst, then send queued frames in one bounded write.
+/// Slow USB still drops old speech instead of accumulating unbounded latency.
 final class MicrophoneUplink: @unchecked Sendable {
     typealias BatchTransport = ([Data], @escaping (Bool) -> Void) -> Void
-    static let maximumQueuedFrames = 3
+    // At most 8 waiting + 8 in flight: 10,624 wire bytes / 320 ms of PCM.
+    // This is capacity, not a delay: pump sends everything available at once.
+    static let maximumQueuedFrames = 8
     struct Snapshot { var queued = 0; var dropped: UInt64 = 0; var inFlight = false }
     private struct State {
         var sessionId: UInt32 = 0
@@ -90,15 +93,17 @@ final class MicrophoneUplink: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let packet = state.pending.removeFirst()
+        let packets = state.pending
+        let frameCount = packets.count
+        state.pending.removeAll(keepingCapacity: true)
         state.inFlight = true
         lock.unlock()
-        sender([packet]) { [weak self] success in
+        sender(packets) { [weak self] success in
             guard let self else { return }
             self.lock.lock()
             guard self.state.generation == generation, self.state.inFlight else { self.lock.unlock(); return }
             self.state.inFlight = false
-            if !success { self.state.dropped &+= 1 }
+            if !success { self.state.dropped &+= UInt64(frameCount) }
             self.lock.unlock()
             self.queue.async { [weak self] in self?.pump(generation: generation) }
         }

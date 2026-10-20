@@ -19,8 +19,10 @@ const INPUT_SAMPLES: usize = 320;
 const INPUT_BYTES: usize = INPUT_SAMPLES * 2;
 const OUTPUT_FRAMES: usize = INPUT_SAMPLES * 3;
 const OUTPUT_CHANNELS: usize = 2;
-const QUEUE_FRAMES: usize = 3;
-const MAX_FRAME_AGE: Duration = Duration::from_millis(60);
+// A single iPad input callback can deliver five 20 ms frames together.
+// Retain that normal 100 ms burst plus short scheduling jitter, still bounded.
+const QUEUE_FRAMES: usize = 8;
+const MAX_FRAME_AGE: Duration = Duration::from_millis(200);
 
 struct PcmFrame {
     received_at: Instant,
@@ -177,15 +179,39 @@ mod tests {
     }
 
     #[test]
-    fn queue_keeps_only_the_latest_three_complete_frames() {
+    fn queue_keeps_only_the_latest_eight_complete_frames() {
         let queue = FrameQueue::new();
         let now = Instant::now();
-        for value in 1..=8 { assert!(queue.push_at(&pcm(value), now)); }
-        assert_eq!(queue.frames.lock().len(), 3);
-        for expected in [6, 7, 8] {
+        for value in 1..=12 { assert!(queue.push_at(&pcm(value), now)); }
+        assert_eq!(queue.frames.lock().len(), 8);
+        for expected in 5..=12 {
             assert_eq!(queue.pop_at(now).unwrap().samples[0], expected);
         }
         assert!(queue.pop_at(now).is_none());
+    }
+
+    #[test]
+    fn a_five_frame_capture_burst_plays_completely_at_twenty_ms_intervals() {
+        let queue = FrameQueue::new();
+        let now = Instant::now();
+        // The frames arrive together, then the worker consumes 100 ms of
+        // PCM in real playback order instead of discarding the burst tail.
+        for value in 1..=5 { assert!(queue.push_at(&pcm(value), now)); }
+        for index in 0..5 {
+            let at = now + Duration::from_millis(index * 20);
+            assert_eq!(queue.pop_at(at).unwrap().samples[0], index as i16 + 1);
+        }
+        assert!(queue.pop_at(now + Duration::from_millis(100)).is_none());
+    }
+
+    #[test]
+    fn a_two_hundred_ms_old_frame_is_accepted_but_older_frames_expire() {
+        let queue = FrameQueue::new();
+        let now = Instant::now();
+        assert!(queue.push_at(&pcm(123), now));
+        assert_eq!(queue.pop_at(now + Duration::from_millis(200)).unwrap().samples[0], 123);
+        assert!(queue.push_at(&pcm(456), now));
+        assert!(queue.pop_at(now + Duration::from_millis(201)).is_none());
     }
 
     #[test]

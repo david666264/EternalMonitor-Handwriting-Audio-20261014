@@ -94,13 +94,17 @@ final class FramedLink: MediaLink {
 
     /// Live audio is expendable under congestion. Unlike reliable keyboard
     /// input, it must never fill the USB queue or close a healthy video link.
-    /// The sender allows one frame in flight; this guard executes on the same
+    /// The sender allows one bounded capture burst in flight; this guard executes on the same
     /// queue as enqueue, so no other writer can consume the checked budget.
     func sendMicrophoneBatch(_ datagrams: [Data], completion: @escaping (Bool) -> Void) {
         let write = { [self] in
-            guard datagrams.count == 1, let packet = datagrams.first,
-                  MicrophoneHeader.decode(packet) != nil, connection != nil,
-                  pendingSendBytes + packet.count + 4 <= min(Self.maximumPendingBytes, 32 * 1024)
+            guard !datagrams.isEmpty, datagrams.count <= MicrophoneUplink.maximumQueuedFrames,
+                  datagrams.allSatisfy({ packet in
+                      guard let decoded = MicrophoneHeader.decode(packet) else { return false }
+                      return !decoded.header.isEnd || datagrams.count == 1
+                  }), connection != nil,
+                  pendingSendBytes + datagrams.reduce(0, { $0 + $1.count + 4 })
+                      <= min(Self.maximumPendingBytes, 32 * 1024)
             else { completion(false); return }
             sendBatch(datagrams, completion: completion)
         }
