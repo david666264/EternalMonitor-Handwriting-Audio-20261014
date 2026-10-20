@@ -206,12 +206,25 @@ final class RelayKeyboardInputViewTests: XCTestCase {
             UIPasteboard.general.items = previous
         }
         UIPasteboard.general.string = "中文，English 😀"
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !window.isHidden && window.isKeyWindow && editor.window === window
+        }, object: nil)
+        await fulfillment(of: [visible], timeout: 15)
         XCTAssertTrue(editor.becomeFirstResponder())
-        XCTAssertTrue(editor.isFirstResponder)
-        XCTAssertTrue(editor.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
-        let pasted = expectation(forNotification: UITextView.textDidChangeNotification, object: editor)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            editor.isFirstResponder && editor.canPerformAction(
+                #selector(UIResponderStandardEditActions.paste(_:)), withSender: nil)
+        }, object: nil)
+        await fulfillment(of: [ready], timeout: 15)
+        // Item providers and the simulator's candidate service can complete
+        // after unrelated text notifications. Wait for the real paste result,
+        // rather than a fixed delay or the first notification from the editor.
+        let pasted = expectation(forNotification: UITextView.textDidChangeNotification,
+            object: editor) { notice in
+                (notice.object as? UITextView)?.text == "中文，English 😀"
+            }
         editor.paste(nil)
-        await fulfillment(of: [pasted], timeout: 5)
+        await fulfillment(of: [pasted], timeout: 15)
         XCTAssertEqual(editor.text, "中文，English 😀")
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(editor.submitDraft())

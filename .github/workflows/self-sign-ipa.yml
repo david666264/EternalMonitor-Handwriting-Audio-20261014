@@ -213,7 +213,8 @@ jobs:
           changed = subprocess.check_output(
               ['git', 'diff', '--name-only', '-z', sha, 'HEAD'], text=True).split('\0')
           allowed = {'.github/workflows/self-sign-ipa.yml',
-                     'ios/EternalMonitorTests/AudioPlaybackTests.swift'}
+                     'ios/EternalMonitorTests/AudioPlaybackTests.swift',
+                     'ios/EternalMonitorTests/RelayKeyboardInputViewTests.swift'}
           unexpected = [name for name in changed if name and name not in allowed]
           if unexpected:
               raise SystemExit('Audio UI baseline reuse rejected; other sources changed: '
